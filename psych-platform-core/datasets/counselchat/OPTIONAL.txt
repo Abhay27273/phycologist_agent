@@ -1,0 +1,5 @@
+﻿CounselChat dataset is mirrored on Hugging Face as:
+  nbertagnolli/counsel-chat
+
+To pull via HF:
+  huggingface-cli download nbertagnolli/counsel-chat --local-dir ./hf_mirror --repo-type dataset

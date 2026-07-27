@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mindful — AI Support Companion</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ==================== AUTH SCREEN ==================== -->
+<main id="auth-screen" class="screen">
+  <div class="auth-card">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1>Mindful</h1>
+      <p class="brand-sub">A quiet space to talk things through</p>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Authentication mode">
+      <button class="tab active" data-mode="login" role="tab" aria-selected="true">Log in</button>
+      <button class="tab" data-mode="register" role="tab" aria-selected="false">Register</button>
+    </div>
+
+    <form id="auth-form" novalidate>
+      <label class="field">
+        <span>Email</span>
+        <input type="email" id="auth-email" autocomplete="email" required>
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input type="password" id="auth-password" autocomplete="current-password" required minlength="8">
+      </label>
+      <p id="auth-error" class="error-text" role="alert" hidden></p>
+      <button type="submit" class="btn-primary" id="auth-submit">Log in</button>
+    </form>
+  </div>
+</main>
+
+<!-- ==================== CHAT SCREEN ==================== -->
+<main id="chat-screen" class="screen" hidden>
+  <header class="chat-header">
+    <div class="header-left">
+      <span class="brand-mark small" aria-hidden="true"></span>
+      <span class="header-title">Mindful</span>
+    </div>
+    <div class="header-right">
+      <span id="risk-badge" class="risk-badge" data-level="LOW" title="Current session risk level">●&nbsp;steady</span>
+      <button id="tts-toggle" class="icon-btn" title="Toggle spoken replies" aria-pressed="false">🔈</button>
+      <button id="logout-btn" class="icon-btn" title="Log out">⏻</button>
+    </div>
+  </header>
+
+  <div id="connection-banner" class="connection-banner" hidden></div>
+
+  <section id="message-list" class="message-list" aria-live="polite" aria-atomic="false"></section>
+
+  <form id="composer" class="composer">
+    <div class="composer-row">
+      <button type="button" id="mic-btn" class="mic-btn" title="Speak your message">
+        <span class="mic-icon" aria-hidden="true">🎙</span>
+      </button>
+      <textarea id="composer-input" rows="1" placeholder="Type or speak how you're feeling…" maxlength="2000"></textarea>
+      <button type="submit" id="send-btn" class="btn-send" title="Send">➤</button>
+    </div>
+    <p id="listening-hint" class="listening-hint" hidden>Listening… speak now</p>
+  </form>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

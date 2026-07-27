@@ -1,22 +1,52 @@
-### AL ###
-#Template for AL projects for Dynamics 365 Business Central
-#launch.json folder
+# Environment / secrets — never commit real API keys or credentials
+.env
+.env.local
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Runtime data — regenerable or local-only, not source code
+psych-platform-core/qdrant_data/
+psych-platform-core/*.sqlite
+psych-platform-core/*.sqlite-journal
+psych-platform-core/*.sqlite-shm
+psych-platform-core/*.sqlite-wal
+psych-platform-core/logs/
+psych-platform-core/scratch/
+*.log
+server_err.txt
+server_out.txt
+
+# Large clinical/dataset source material — downloaded via scripts, not source code.
+# See scripts/ingest.py, scripts/ingest_datasets.py, scripts/download_clinical_data.ps1
+psych-platform-core/data/*.pdf
+psych-platform-core/data/**/*.pdf
+psych-platform-core/datasets/counselchat/counsel-chat/
+psych-platform-core/datasets/ecc/ECC/
+psych-platform-core/datasets/ecc/*.pdf
+psych-platform-core/datasets/pysdial/PsyDial/
+psych-platform-core/datasets/empathetic_dialogues/*.tar.gz
+psych-platform-core/datasets/empathetic_dialogues/empatheticdialogues/*.csv
+
+# IDE
 .vscode/
-#Cache folder
-.alcache/
-#Symbols folder
-.alpackages/
-#Snapshots folder
-.snapshots/
-#Testing Output folder
-.output/
-#Extension App-file
-*.app
-#Rapid Application Development File
-rad.json
-#Translation Base-file
-*.g.xlf
-#License-file
-*.flf
-#Test results file
-TestResults.xml
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Installer artifacts accidentally dropped in repo root
+AzureCLI.msi
+azurecli_install.log

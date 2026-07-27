@@ -1,0 +1,87 @@
+version: '3.8'
+
+# Local dev / integration-test stack — mirrors the services used in production
+# (see DEPLOYMENT_PLAN.md for the managed-service equivalents on Azure/AWS).
+#
+# Secrets: POSTGRES_PASSWORD, JWT_SECRET_KEY, GOOGLE_API_KEY, GROQ_API_KEY are
+# read from a local .env file (docker-compose auto-loads .env in this
+# directory for ${VAR} interpolation below). Never hardcode secrets here —
+# this file is checked into git.
+#
+# Usage:
+#   cp .env.example .env   # fill in real API keys + a strong POSTGRES_PASSWORD
+#   docker compose up -d
+#   docker compose exec app alembic upgrade head
+#   docker compose exec app python scripts/ingest.py
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: psych_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-psych_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-psych_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-psych_admin}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:1.18.2
+    container_name: psych_qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/collections || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: psych_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: psych_app
+    env_file:
+      - .env
+    environment:
+      # Container-network hostnames override whatever .env has for local dev
+      # (e.g. 127.0.0.1) — services below are reachable by their compose name.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-psych_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-psych_db}
+      QDRANT_MODE: server
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  redis_data:

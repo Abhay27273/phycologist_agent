@@ -1,0 +1,24 @@
+.git
+.gitignore
+.env
+.env.example
+.pytest_cache
+__pycache__
+*.pyc
+venv
+.venv
+
+# Local data — never bake PDFs/datasets into the image; mount or fetch at runtime
+data
+datasets
+qdrant_data
+
+# Local dev artifacts
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+logs
+scratch
+tests
+docs
