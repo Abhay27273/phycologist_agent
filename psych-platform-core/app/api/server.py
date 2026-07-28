@@ -22,7 +22,7 @@ from slowapi.errors import RateLimitExceeded
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.api.limiter import limiter
-from app.api.routes import chat, health
+from app.api.routes import chat, health, voice
 from app.api.routes import auth as auth_routes
 from app.graph.workflow import init_graph, close_graph
 
@@ -78,6 +78,7 @@ def create_application() -> FastAPI:
     app.include_router(health.router, tags=["Health"])
     app.include_router(auth_routes.router, prefix=settings.API_PREFIX, tags=["Auth"])
     app.include_router(chat.router, prefix=settings.API_PREFIX, tags=["Chat"])
+    app.include_router(voice.router, prefix=settings.API_PREFIX, tags=["Voice"])
 
     # Serve chat UI — mount last so API routes win on any overlap
     static_dir = Path(__file__).parent.parent / "static"

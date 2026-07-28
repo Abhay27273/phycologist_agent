@@ -46,6 +46,7 @@
     </div>
     <div class="header-right">
       <span id="risk-badge" class="risk-badge" data-level="LOW" title="Current session risk level">●&nbsp;steady</span>
+      <button id="call-btn" class="icon-btn" title="Start voice call">📞</button>
       <button id="tts-toggle" class="icon-btn" title="Toggle spoken replies" aria-pressed="false">🔈</button>
       <button id="logout-btn" class="icon-btn" title="Log out">⏻</button>
     </div>
@@ -67,6 +68,27 @@
   </form>
 </main>
 
+<!-- ==================== VOICE CALL SCREEN ==================== -->
+<main id="voice-screen" class="screen voice-screen" hidden>
+  <header class="voice-header">
+    <span id="voice-risk-badge" class="risk-badge" data-level="LOW" title="Current session risk level">●&nbsp;steady</span>
+    <button id="voice-mute-btn" class="icon-btn" title="Mute microphone" aria-pressed="false">🎙</button>
+  </header>
+
+  <div class="voice-stage">
+    <div id="voice-orb" class="voice-orb" data-state="idle" aria-hidden="true">
+      <div class="voice-orb-core"></div>
+    </div>
+    <p id="voice-state-label" class="voice-state-label">Connecting…</p>
+    <p id="voice-transcript" class="voice-transcript" aria-live="polite"></p>
+  </div>
+
+  <div class="voice-controls">
+    <button id="voice-end-btn" class="btn-end-call" title="End call">End call</button>
+  </div>
+</main>
+
 <script src="/app.js"></script>
+<script src="/voice-call.js"></script>
 </body>
 </html>

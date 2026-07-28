@@ -41,3 +41,6 @@ psycopg[async,pool]
 pytest==8.3.4
 pytest-asyncio==0.24.0
 httpx==0.28.1
+
+# Real-time voice (Phase V) — streaming STT + TTS
+deepgram-sdk==4.8.0

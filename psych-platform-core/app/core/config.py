@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     QDRANT_MODE: str = "local"   # "local" | "server"
     QDRANT_URL: str = "http://127.0.0.1:6333"  # used when QDRANT_MODE=server
 
+    # Real-time voice (Phase V) — Deepgram streaming STT + TTS
+    DEEPGRAM_API_KEY: str = Field(default="", description="Deepgram API key; voice endpoints 503 if unset")
+    DEEPGRAM_STT_MODEL: str = "nova-3"
+    DEEPGRAM_TTS_MODEL: str = "aura-2-thalia-en"
+    VOICE_ENABLED: bool = True
+
     # --- VALIDATORS ---
 
     @field_validator("CORS_ORIGINS", mode="before")
