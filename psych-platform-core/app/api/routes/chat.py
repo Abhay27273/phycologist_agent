@@ -88,6 +88,44 @@ async def _load_longitudinal_context(
     return " → ".join(parts)
 
 
+async def _record_trajectory(
+    db, user_id: str, session_id: str, mood: str, risk_score: int
+) -> None:
+    """Append this turn to the episodic mood time-series.
+
+    MemoryService.record_turn existed but had no caller anywhere in the app,
+    so mood_trajectory stayed empty (0 rows in production) and everything
+    built on it — slope detection, dependency monitoring, recurrence recall —
+    silently had nothing to read. Called from every path that resolves a
+    mood/risk pair so the series does not develop holes depending on which
+    endpoint a client happens to use.
+
+    turn_index is derived from the row count rather than passed in: the
+    endpoints here compute message counts differently (some include the
+    assistant turn, some do not), and a consistent monotonic index matters
+    more for slope detection than matching any one endpoint's notion of a
+    turn. Never fatal — trajectory is analytics, not the user's reply.
+    """
+    try:
+        from sqlalchemy import func as _func
+        from app.infrastructure.models import MoodTrajectory
+        result = await db.execute(
+            select(_func.count(MoodTrajectory.id)).where(
+                MoodTrajectory.session_id == session_id
+            )
+        )
+        turn_index = (result.scalar() or 0) + 1
+        await MemoryService(db).record_turn(
+            user_id=user_id,
+            session_id=session_id,
+            turn_index=turn_index,
+            mood=mood,
+            risk_score=risk_score,
+        )
+    except Exception as e:
+        logger.warning("Trajectory record failed | session=%s | %s", session_id, e)
+
+
 def _risk_level(score: int) -> str:
     if score >= 8:
         return "HIGH"
@@ -151,6 +189,7 @@ async def chat_endpoint(
         detected_mood = final_state.get("current_mood", "neutral")
         risk_score = final_state.get("risk_score", 0)
         level = _risk_level(risk_score)
+        await _record_trajectory(db, payload.user_id, payload.session_id, detected_mood, risk_score)
 
         ai_msg = ChatMessage(
             session_id=session.id,
@@ -258,6 +297,7 @@ async def stream_chat_endpoint(
             language = _detect_language(payload.message)
             is_crisis = risk_score >= 8
             level = _risk_level(risk_score)
+            await _record_trajectory(db, payload.user_id, payload.session_id, mood, risk_score)
 
             # Send mood/risk immediately so clients can react early
             yield f"data: {json.dumps({'type': 'meta', 'mood': mood, 'risk_score': risk_score})}\n\n"
@@ -392,6 +432,7 @@ async def stream_sentences_endpoint(
             language = _detect_language(payload.message)
             is_crisis = risk_score >= 8
             level = _risk_level(risk_score)
+            await _record_trajectory(db, payload.user_id, payload.session_id, mood, risk_score)
 
             yield f"data: {json.dumps({'type': 'meta', 'mood': mood, 'risk_score': risk_score})}\n\n"
 
@@ -525,15 +566,21 @@ async def websocket_chat(
                 multimodal_hint = _build_multimodal_hint(
                     {"audio_features": audio_raw, "video_features": video_raw}
                 )
-                analysis, history = await asyncio.gather(
+                # Patient-memory recall joins the gather so it overlaps the
+                # sentiment round-trip instead of adding to the critical path.
+                # Hard-filtered by user_id inside retrieve_patient_memory, and
+                # returns [] if the collection was never built.
+                analysis, history, past_memories = await asyncio.gather(
                     sentiment_service.analyze_sentiment(message + multimodal_hint),
                     _load_history(db, session_id),
+                    rag_service.retrieve_patient_memory(user_id=user_id, query=message, k=3),
                 )
                 mood = analysis.get("mood", "neutral")
                 risk_score = int(analysis.get("risk_score", 0))
                 language = _detect_language(message)
                 is_crisis = risk_score >= 8
                 level = _risk_level(risk_score)
+                await _record_trajectory(db, user_id, session_id, mood, risk_score)
 
                 await websocket.send_text(
                     json.dumps({"type": "meta", "mood": mood, "risk_score": risk_score})
@@ -553,6 +600,17 @@ async def websocket_chat(
                         context = await rag_service.retrieve_clinical_context(message, mood)
                     else:
                         context = ""
+
+                    # Keep recalled personal history under its own heading so
+                    # the model does not read the user's own past words as
+                    # clinical evidence (same separation voice.py uses).
+                    if past_memories:
+                        recalled = "\n".join(f"- {m}" for m in past_memories)
+                        recall_block = (
+                            "[You may recall from earlier conversations with "
+                            f"this person]\n{recalled}"
+                        )
+                        context = f"{recall_block}\n\n{context}" if context else recall_block
 
                     history.append({"role": "user", "content": message})
 

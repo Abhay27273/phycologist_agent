@@ -520,10 +520,22 @@ class VoiceSession:
                 "messages": [{"role": "user", "content": message}],
                 "user_id": self.user_id,
             }
-            sentiment_result, history = await asyncio.wait_for(
+            # Patient-memory recall runs INSIDE this gather, not after it, so
+            # it costs no extra wall-clock — it overlaps the sentiment LLM
+            # round-trip, which dominates this stage anyway. Sequencing it
+            # would have added an embedding + vector search to every turn's
+            # critical path, which is exactly the mistake that made
+            # retrieve_style_exemplars so expensive before it was cached.
+            # retrieve_patient_memory hard-filters on user_id and returns []
+            # when the collection does not exist, so this degrades to a no-op
+            # rather than an error where the store was never built.
+            sentiment_result, history, past_memories = await asyncio.wait_for(
                 asyncio.gather(
                     _sentiment_node(sentiment_state),
                     _load_history(self.db, self.session_id),
+                    rag_service.retrieve_patient_memory(
+                        user_id=self.user_id, query=message, k=3
+                    ),
                 ),
                 timeout=LLM_SENTIMENT_TIMEOUT_S,
             )
@@ -535,6 +547,28 @@ class VoiceSession:
             cognitive_distortion = sentiment_result["cognitive_distortion_detected"]
             is_crisis = sentiment_result["is_crisis"]
             level = _risk_level(risk_score)
+
+            # Episodic layer: one row per turn, not per session. MemoryService
+            # .record_turn existed but was never called from any route, so
+            # mood_trajectory sat empty (0 rows in prod) and every
+            # trajectory-based feature — slope detection, dependency
+            # monitoring, recurrence recall — had nothing to read. Recorded
+            # here, right after sentiment resolves, because this is the only
+            # point where mood and risk are both known for THIS turn.
+            # Deliberately not fatal: a trajectory write must never cost the
+            # user their reply.
+            try:
+                await MemoryService(self.db).record_turn(
+                    user_id=self.user_id,
+                    session_id=self.session_id,
+                    turn_index=len(history) + 1,
+                    mood=mood,
+                    risk_score=risk_score,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Trajectory record failed | session=%s | %s", self.session_id, exc
+                )
 
             await self.send_json({"type": "meta", "mood": mood, "risk_score": risk_score})
 
@@ -579,12 +613,26 @@ class VoiceSession:
                 else:
                     context = ""
                 self._relevant_context = context
-                if longitudinal_context and context:
-                    merged_context = f"[Previous sessions]\n{longitudinal_context}\n\n[Clinical evidence]\n{context}"
-                elif longitudinal_context:
-                    merged_context = f"[Previous sessions]\n{longitudinal_context}"
-                else:
-                    merged_context = context
+                # Three distinct memory sources, kept under separate headings
+                # rather than concatenated: they carry different epistemic
+                # weight and the model must not treat a recalled fragment of
+                # the user's own past speech as clinical evidence.
+                #   [Previous sessions]  — summaries of whole past sessions
+                #   [You may recall]     — semantic recall of this user's own
+                #                          past dialogue (patient_memory)
+                #   [Clinical evidence]  — retrieved clinical KB passages
+                blocks = []
+                if longitudinal_context:
+                    blocks.append(f"[Previous sessions]\n{longitudinal_context}")
+                if past_memories:
+                    recalled = "\n".join(f"- {m}" for m in past_memories)
+                    blocks.append(
+                        "[You may recall from earlier conversations with this "
+                        f"person]\n{recalled}"
+                    )
+                if context:
+                    blocks.append(f"[Clinical evidence]\n{context}")
+                merged_context = "\n\n".join(blocks)
 
                 style_exemplars = await rag_service.retrieve_style_exemplars(
                     move=move,
