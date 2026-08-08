@@ -1,0 +1,27 @@
+# TLS termination for the Azure VM deployment.
+#
+# HTTPS is NOT optional for this app: browsers refuse getUserMedia (microphone
+# access) on insecure origins, so over plain HTTP the voice feature cannot
+# start at all — the mic permission prompt never appears. Text chat would work
+# and voice would silently be dead, which is the worst kind of broken.
+#
+# Caddy obtains and renews Let's Encrypt certificates automatically, and
+# proxies WebSocket upgrades (/api/v1/ws/voice, /api/v1/ws/chat) without extra
+# configuration — no manual Upgrade/Connection header handling needed.
+
+aihaven.duckdns.org {
+	reverse_proxy app:8000 {
+		# Voice turns stream for a while and a call holds one socket open for
+		# its whole duration; the default 30s would sever long calls mid-turn.
+		transport http {
+			read_timeout 600s
+			write_timeout 600s
+		}
+	}
+
+	encode gzip
+	log {
+		output stdout
+		format console
+	}
+}

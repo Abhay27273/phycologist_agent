@@ -9,6 +9,7 @@ langchain-huggingface
 langchain-experimental
 sentence-transformers==5.2.2
 torch==2.10.0
+onnxruntime  # Smart Turn v3 (turn_detector.py) — audio-based turn-completion classifier
 qdrant-client
 langchain-qdrant
 asyncpg
@@ -44,3 +45,4 @@ httpx==0.28.1
 
 # Real-time voice (Phase V) — streaming STT + TTS
 deepgram-sdk==4.8.0
+websockets>=12.0          # SarvamSTTStream WebSocket client

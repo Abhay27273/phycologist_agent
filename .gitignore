@@ -50,3 +50,12 @@ Thumbs.db
 # Installer artifacts accidentally dropped in repo root
 AzureCLI.msi
 azurecli_install.log
+
+# Clinical corpora — real consented, de-identified session transcripts
+# (data/hinglish_sessions/) plus licensed/derived datasets and source PDFs.
+# Deliberately NOT committed: this repository is public, and de-identified
+# is not the same as non-sensitive — these contain passive suicidal-ideation
+# content and a child safeguarding interview. Publishing them is effectively
+# irreversible (forks, caches, scrapers), so the corpus is transferred to
+# deployment targets out-of-band instead. ~92MB.
+psych-platform-core/data/

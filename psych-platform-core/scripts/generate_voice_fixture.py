@@ -21,9 +21,13 @@ from app.services.voice_service import DeepgramTTSStream  # noqa: E402
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 
 SAMPLES = {
+    # Deliberately mild, unambiguous non-crisis distress — phrasing like
+    # "I don't know how to cope with it anymore" scores right at the
+    # risk_score >= 8 crisis threshold and accidentally routes this fixture
+    # into the crisis path too, defeating the point of a RAG+LLM latency test.
     "voice_sample.raw": (
-        "I've been feeling really anxious and overwhelmed lately, and I don't "
-        "know how to cope with it anymore."
+        "I've been feeling anxious about my job interview next week and "
+        "could use some advice on managing the stress."
     ),
     "voice_crisis_sample.raw": "I want to end my life, I can't go on anymore.",
 }

@@ -10,11 +10,13 @@ from app.infrastructure.database import get_db
 from app.infrastructure.models import User, ChatSession, ChatMessage
 from app.domain.state import ChatInput, ChatOutput
 import app.graph.workflow as _workflow
-from app.graph.workflow import sentiment_service, gemini_service, rag_service
+from app.graph.workflow import sentiment_service, gemini_service, rag_service, therapy_llm_service
+from app.services.memory_service import extract_session_insights, MemoryService
 from app.api.dependencies import get_current_user
 from app.api.limiter import limiter
 from app.core.logging import logging
-from app.graph.nodes.sentiment import _build_multimodal_hint
+from app.graph.nodes.sentiment import _build_multimodal_hint, _detect_language
+from app.graph.nodes.crisis import crisis_message_for
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -168,6 +170,23 @@ async def chat_endpoint(
             session.summary = new_summary
             session_dirty = True
             logger.info("Session summary persisted | session=%s", session.id)
+            # Same checkpoint (every SUMMARY_INTERVAL messages) also runs the
+            # deeper structured-entity consolidation pass — piggybacking on
+            # SummaryNode's existing trigger condition rather than adding a
+            # second, separate message-count check.
+            try:
+                insights = await extract_session_insights(
+                    therapy_llm_service, final_state["messages"], detected_mood
+                )
+                if insights:
+                    await MemoryService(db).apply_consolidation(
+                        user_id=payload.user_id,
+                        session_id=session.id,
+                        insights=insights,
+                        rag_service=rag_service,
+                    )
+            except Exception as e:
+                logger.error("Session consolidation failed | session=%s | %s", session.id, e)
         if session_dirty:
             db.add(session)
         await db.commit()
@@ -236,6 +255,7 @@ async def stream_chat_endpoint(
             )
             mood = analysis.get("mood", "neutral")
             risk_score = int(analysis.get("risk_score", 0))
+            language = _detect_language(payload.message)
             is_crisis = risk_score >= 8
             level = _risk_level(risk_score)
 
@@ -246,8 +266,8 @@ async def stream_chat_endpoint(
             full_response = ""
 
             if is_crisis:
-                full_response = CRISIS_MESSAGE
-                yield f"data: {json.dumps({'type': 'token', 'content': CRISIS_MESSAGE})}\n\n"
+                full_response = crisis_message_for(language)
+                yield f"data: {json.dumps({'type': 'token', 'content': full_response})}\n\n"
             else:
                 # Skip RAG for short/trivial messages (< 4 words, non-clinical mood)
                 # — saves 1.5-4s of cross-encoder CPU time before first token.
@@ -266,7 +286,7 @@ async def stream_chat_endpoint(
                 # Stream tokens — Groq when GROQ_API_KEY is set (~100ms to first
                 # token); Gemini fallback otherwise (sentiment_service = gemini_service).
                 async for token in sentiment_service.stream_therapeutic_response(
-                    history=history, context=context, mood=mood
+                    history=history, context=context, mood=mood, language=language
                 ):
                     full_response += token
                     yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
@@ -369,6 +389,7 @@ async def stream_sentences_endpoint(
             )
             mood = analysis.get("mood", "neutral")
             risk_score = int(analysis.get("risk_score", 0))
+            language = _detect_language(payload.message)
             is_crisis = risk_score >= 8
             level = _risk_level(risk_score)
 
@@ -377,8 +398,8 @@ async def stream_sentences_endpoint(
             full_response = ""
 
             if is_crisis:
-                full_response = CRISIS_MESSAGE
-                yield f"data: {json.dumps({'type': 'sentence', 'content': CRISIS_MESSAGE})}\n\n"
+                full_response = crisis_message_for(language)
+                yield f"data: {json.dumps({'type': 'sentence', 'content': full_response})}\n\n"
             else:
                 _clinical = {"anxious", "depressed", "lonely", "angry", "stressed",
                              "fearful", "hopeless", "guilty", "confused"}
@@ -391,7 +412,7 @@ async def stream_sentences_endpoint(
 
                 buf = ""
                 async for token in sentiment_service.stream_therapeutic_response(
-                    history=history, context=context, mood=mood
+                    history=history, context=context, mood=mood, language=language
                 ):
                     full_response += token
                     buf += token
@@ -510,6 +531,7 @@ async def websocket_chat(
                 )
                 mood = analysis.get("mood", "neutral")
                 risk_score = int(analysis.get("risk_score", 0))
+                language = _detect_language(message)
                 is_crisis = risk_score >= 8
                 level = _risk_level(risk_score)
 
@@ -520,9 +542,9 @@ async def websocket_chat(
                 full_response = ""
 
                 if is_crisis:
-                    full_response = CRISIS_MESSAGE
+                    full_response = crisis_message_for(language)
                     await websocket.send_text(
-                        json.dumps({"type": "sentence", "content": CRISIS_MESSAGE})
+                        json.dumps({"type": "sentence", "content": full_response})
                     )
                 else:
                     _clinical = {"anxious", "depressed", "lonely", "angry", "stressed",
@@ -536,7 +558,7 @@ async def websocket_chat(
 
                     buf = ""
                     async for token in sentiment_service.stream_therapeutic_response(
-                        history=history, context=context, mood=mood
+                        history=history, context=context, mood=mood, language=language
                     ):
                         full_response += token
                         buf += token

@@ -1,0 +1,66 @@
+# Production overlay for the Azure VM deployment.
+#
+# Usage (from psych-platform-core/ on the VM):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# What this overlay changes versus the base docker-compose.yml:
+#   1. Adds Caddy for automatic HTTPS on aihaven.duckdns.org. Mandatory —
+#      browsers block microphone access on insecure origins, so voice simply
+#      does not function over plain HTTP (see Caddyfile).
+#   2. Stops publishing the app port on the host. The app is reached only
+#      through Caddy, so 8000 is not exposed to the internet directly.
+#   3. Pins QDRANT_MODE=server. Embedded/local Qdrant takes an exclusive
+#      per-client lock on the storage folder, which deadlocks when the app
+#      opens separate collections (clinical KB, style exemplars, patient
+#      memory) — that stalled every voice turn by 6-18s and killed the STT
+#      socket. Server mode has no such lock and also restores the style
+#      exemplar and patient-memory collections.
+#
+# NOTE: psych-platform-core/data/ is deliberately NOT in git (real consented
+# clinical transcripts, public repo). Copy it to the VM out-of-band before
+# running the ingest scripts:
+#   scp -r psych-platform-core/data <user>@<vm-host>:~/phycologist_agent/psych-platform-core/
+
+services:
+  app:
+    environment:
+      QDRANT_MODE: server
+      QDRANT_URL: http://qdrant:6333
+      VECTOR_DB_BACKEND: qdrant
+      ENVIRONMENT: prod
+      # Must match the public origin exactly or the browser blocks the
+      # WebSocket handshake for voice.
+      CORS_ORIGINS: https://aihaven.duckdns.org
+    ports: !reset []          # reachable only via Caddy
+    expose:
+      - "8000"
+
+  # The base compose publishes these to the host for local development. On a
+  # public VM that means exposing them to the whole internet — Azure NSG rules
+  # are the only thing standing in front of an unauthenticated Redis and a
+  # Postgres on the default port. They only ever need to be reachable by the
+  # app over the internal compose network, so stop publishing them entirely.
+  postgres:
+    ports: !reset []
+  qdrant:
+    ports: !reset []
+  redis:
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: psych_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"       # required for the ACME HTTP-01 challenge
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # persists certificates across restarts
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:

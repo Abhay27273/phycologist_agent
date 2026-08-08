@@ -51,6 +51,18 @@ class PsychologicalState(TypedDict):
     risk_score: int  # 0-10 (10 = Immediate Crisis)
     is_crisis: bool
 
+    # Language detection — set by SentimentNode on every turn
+    # "en" | "hi" | "hinglish" — drives which prompt register TherapyNode uses
+    detected_language: Optional[str]
+
+    # Cognitive distortion flag — set by SentimentNode; triggers reality_test move
+    cognitive_distortion_detected: Optional[bool]
+
+    # StrategyNode output — which therapeutic move to execute this turn
+    selected_move: Optional[str]
+    # Append-only list trimmed to last 3 to prevent move repetition
+    last_three_moves: Optional[List[str]]
+
     # RAG Data
     relevant_context: Optional[str]
 

@@ -86,7 +86,17 @@
 
     try {
       call.micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,   // keep: TTS through speakers must not self-trigger
+          noiseSuppression: true,   // keep: handles steady room noise upstream of our gate
+          // autoGainControl OFF deliberately: AGC ramps gain up during
+          // silence, which inflates the apparent noise floor and destabilises
+          // energy-based gating/VAD downstream (the level the gate sees for
+          // "quiet" keeps moving). Constant gain gives turn detection a
+          // stable reference.
+          autoGainControl: false,
+        },
       });
     } catch {
       setLabel("Microphone access is required for a voice call.");
@@ -132,6 +142,23 @@
 
     ws.onopen = () => {
       call.captureNode.port.onmessage = (event) => {
+        // The capture worklet posts raw audio (ArrayBuffer) plus occasional
+        // diagnostic objects — only audio goes on the wire.
+        if (!(event.data instanceof ArrayBuffer)) {
+          if (event.data && event.data.type === "gate_stats") {
+            const s = event.data;
+            // A persistently high gatedRatio means the noise gate is
+            // swallowing speech — the failure mode where the agent looks
+            // dead because the server never receives any words.
+            if (s.gatedRatio > 0.95) {
+              console.warn("[voice] mic gate closed almost continuously — " +
+                "speech may be getting suppressed", s);
+            } else {
+              console.debug("[voice] gate stats", s);
+            }
+          }
+          return;
+        }
         if (ws.readyState === WebSocket.OPEN && !call.muted) {
           ws.send(event.data);
         }
@@ -195,6 +222,19 @@
         setTranscript("");
         break;
 
+      // Stage 1 of barge-in: mic energy suggests the user started talking.
+      // Stop output immediately so we're not talking over them, but keep the
+      // queued audio in case it was only noise.
+      case "duck":
+        call.playbackNode.port.postMessage({ type: "pause" });
+        break;
+
+      // Stage 1 turned out to be noise, not speech — carry on where we left off.
+      case "unduck":
+        call.playbackNode.port.postMessage({ type: "resume" });
+        break;
+
+      // Stage 2: real words confirmed. Discard the rest of the reply.
       case "interrupted":
         call.playbackNode.port.postMessage({ type: "clear" });
         setOrbState("listening");
@@ -203,6 +243,13 @@
 
       case "done":
         setRisk(data.risk_level || "LOW");
+        break;
+
+      case "stt_reconnecting":
+        // Transient and self-healing (the server reconnects within ~20ms of
+        // the next audio packet) — say "reconnecting", not "error", so a
+        // blip that has already recovered doesn't read as a dead call.
+        setLabel("Reconnecting…");
         break;
 
       case "error":

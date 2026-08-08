@@ -50,6 +50,20 @@ class Settings(BaseSettings):
     # Groq (free-tier fallback)
     GROQ_API_KEY: str = Field(default="", description="Groq API Key")
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_SENTIMENT_MODEL: str = "llama-3.1-8b-instant"
+    # Optional additional Groq keys for round-robin load balancing — each
+    # free-tier key gets its own ~12K-tokens/minute cap, which was the
+    # actual shared bottleneck throttling both text-chat and voice once
+    # OpenRouter/Gemini's daily quotas were exhausted (2026-08-06). N keys
+    # round-robining multiplies the effective per-minute budget by N instead
+    # of everything funneling through one key's cap.
+    GROQ_API_KEY_2: str = Field(default="", description="Additional Groq API key for load balancing")
+    GROQ_API_KEY_3: str = Field(default="", description="Additional Groq API key for load balancing")
+    GROQ_API_KEY_4: str = Field(default="", description="Additional Groq API key for load balancing")
+
+    # OpenRouter — aggregated free-tier models (generous daily limits)
+    OPENROUTER_API_KEY: str = Field(default="", description="OpenRouter API key")
+    OPENROUTER_MODEL: str = "meta-llama/llama-3.3-70b-instruct:free"
 
     # RAG / Vector DB — backend selector
     VECTOR_DB_BACKEND: Literal["pinecone", "qdrant"] = "pinecone"
@@ -60,15 +74,32 @@ class Settings(BaseSettings):
 
     # Qdrant — local file-based (default) or server mode (Docker / multi-worker)
     QDRANT_COLLECTION_NAME: str = "psych-brain"
+    # Style exemplars live in a separate collection so clinical evidence and
+    # transcript-derived style exemplars are never retrieved into the same block.
+    QDRANT_STYLE_COLLECTION: str = "psych-style"
+    # Per-user long-term semantic memory (dialogue highlights) — always
+    # filtered by user_id, never shared with the clinical_kb/style collections.
+    QDRANT_PATIENT_MEMORY_COLLECTION: str = "psych-patient-memory"
     QDRANT_PATH: str = "./qdrant_data"
     QDRANT_MODE: str = "local"   # "local" | "server"
     QDRANT_URL: str = "http://127.0.0.1:6333"  # used when QDRANT_MODE=server
+
+    # Pinecone — style exemplars in a separate index (namespaces are not enough
+    # because the embedding model for style may differ from clinical content).
+    PINECONE_STYLE_INDEX_NAME: str = "psych-style"
 
     # Real-time voice (Phase V) — Deepgram streaming STT + TTS
     DEEPGRAM_API_KEY: str = Field(default="", description="Deepgram API key; voice endpoints 503 if unset")
     DEEPGRAM_STT_MODEL: str = "nova-3"
     DEEPGRAM_TTS_MODEL: str = "aura-2-thalia-en"
     VOICE_ENABLED: bool = True
+
+    # Sarvam AI — Indian language voice (Hinglish/code-switch)
+    # Used when detected_language is "hi" or "hinglish"; Deepgram stays as English fallback.
+    SARVAM_API_KEY: str = Field(default="", description="Sarvam AI key; falls back to Deepgram if unset")
+    SARVAM_STT_MODEL: str = "saaras:v3"
+    SARVAM_TTS_MODEL: str = "bulbul:v1"
+    SARVAM_TTS_VOICE: str = "meera"
 
     # --- VALIDATORS ---
 

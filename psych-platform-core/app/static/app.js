@@ -36,6 +36,7 @@
   const authSubmit = $("auth-submit");
   const tabs = document.querySelectorAll(".tab");
   const messageList = $("message-list");
+  const emptyState = $("empty-state");
   const composer = $("composer");
   const composerInput = $("composer-input");
   const sendBtn = $("send-btn");
@@ -78,6 +79,7 @@
   }
 
   function appendMessage(role, text, opts = {}) {
+    if (emptyState) emptyState.hidden = true;
     const el = document.createElement("div");
     el.className = `msg ${role}${opts.crisis ? " crisis" : ""}`;
     el.textContent = text;
@@ -399,7 +401,8 @@
     localStorage.removeItem("mindful_user_id");
     state.token = null;
     state.userId = null;
-    messageList.innerHTML = "";
+    messageList.querySelectorAll(".msg, .typing-dots").forEach((el) => el.remove());
+    if (emptyState) emptyState.hidden = false;
     setRiskBadge("LOW");
     chatScreen.hidden = true;
     authScreen.hidden = false;
