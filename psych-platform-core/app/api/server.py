@@ -74,6 +74,15 @@ async def _warm_up_style_exemplars() -> None:
         # this work is CPU-bound and GIL-hungry, so an immediate exhaustive
         # sweep delays readiness by minutes (observed).
         await asyncio.sleep(5)
+        # Bail out if the collection was never ingested. Otherwise the full
+        # sweep grinds through every combination only to fail on each one —
+        # 72 pointless vector-store build attempts that saturate the CPU for
+        # a couple of minutes after every restart. Observed in production
+        # (where psych-style does not exist): that churn starved the event
+        # loop enough to time out a WebSocket opening handshake.
+        if rag_service._get_style_store() is None:
+            print("Style exemplar collection unavailable — skipping warmup.")
+            return
         for move in sorted(MOVE_SET):
             for register in ("en", "hinglish-casual"):
                 for valence in ("neutral", "low"):

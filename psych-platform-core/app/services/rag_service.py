@@ -391,6 +391,13 @@ class RAGService:
 
         store = self._get_style_store()
         if store is None:
+            # Cache the miss. _get_style_store leaves self._style_store as
+            # None when the collection does not exist, so without this every
+            # call retried the vector-store build — and on deployments where
+            # psych-style was never ingested (production today) that is every
+            # single turn, forever. Returning [] before the cache write meant
+            # the cache was bypassed in exactly the case it was most needed.
+            self._style_exemplar_cache[cache_key] = []
             return []
 
         def _filter(include_valence: bool):
