@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str = Field(..., description="Google Gemini API Key")
     GEMINI_MODEL: str = "gemini-2.5-flash"
 
+    # Google Sign-In (Identity Services ID-token flow — distinct from
+    # GOOGLE_API_KEY above, which is for Gemini). This is the OAuth Client
+    # ID, not a secret — it's the token audience the backend checks against,
+    # and it's also embedded directly in the frontend (Google's own client
+    # IDs are public by design, included in every browser-issued ID token
+    # regardless). Empty string disables the feature: /auth/config reports
+    # it unset and the frontend simply doesn't render the button.
+    GOOGLE_OAUTH_CLIENT_ID: str = Field(default="", description="Google OAuth Client ID for Sign in with Google")
+
     # Groq (free-tier fallback)
     GROQ_API_KEY: str = Field(default="", description="Groq API Key")
     GROQ_MODEL: str = "llama-3.3-70b-versatile"

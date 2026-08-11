@@ -4,6 +4,10 @@ pydantic-settings
 pydantic[email]
 langgraph
 langchain-google-genai
+google-auth  # already a transitive dep via langchain-google-genai; pinned
+             # explicitly since Sign in with Google's ID-token verification
+             # (app/api/routes/auth.py) depends on it directly, not just
+             # incidentally through Gemini's client
 langchain-groq
 langchain-huggingface
 langchain-experimental

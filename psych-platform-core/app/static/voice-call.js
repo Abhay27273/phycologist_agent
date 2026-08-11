@@ -212,12 +212,27 @@
         break;
 
       case "speaking_started":
-        setOrbState("speaking");
+        // Deliberately NOT setOrbState("speaking") here. This fires the
+        // instant the server decides to respond — before RAG, generation,
+        // or TTS synthesis has produced a single byte. Setting "speaking"
+        // this early is exactly what caused "see speaking but no voice is
+        // coming": the server orb state jumped to speaking immediately,
+        // while the worklet's playback_active (the only signal tied to
+        // audio actually reaching the speakers, see audio-playback.js) took
+        // however long generation+TTS+network+buffering actually needed —
+        // 300ms typically, but several seconds under load, per the "Turn
+        // timing" logs. The label updates as an anticipatory hint; the
+        // orb only flips once playback_active (line ~133) fires for real.
         setLabel("Speaking…");
         break;
 
       case "speaking_ended":
-        setOrbState("listening");
+        // Same reasoning in reverse: the server has finished SENDING TTS
+        // text, but the client may still have buffered audio not yet
+        // played. Forcing "listening" here could flip the orb while sound
+        // is still coming out of the speakers. playback_idle (fired only
+        // once the worklet's queue truly drains) is the truthful signal —
+        // this only updates the label and clears the transcript.
         setLabel("Listening…");
         setTranscript("");
         break;

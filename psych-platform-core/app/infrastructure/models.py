@@ -16,6 +16,11 @@ class User(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=True)
+    # Google's stable per-account identifier ("sub" claim). Tracked
+    # separately from email rather than matching on email alone, so a
+    # password account and its later-linked Google sign-in resolve to
+    # exactly one user id without ever trusting an unverified email claim.
+    google_sub = Column(String, unique=True, index=True, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     sessions = relationship("ChatSession", back_populates="user")

@@ -413,10 +413,82 @@
   logoutBtn.addEventListener("click", logout);
 
   // ---------------------------------------------------------
+  // Google Sign-In
+  // ---------------------------------------------------------
+  function waitForGoogleSDK(timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
+      (function poll() {
+        if (window.google && window.google.accounts && window.google.accounts.id) {
+          resolve();
+        } else if (Date.now() - start > timeoutMs) {
+          reject(new Error("Google Sign-In script did not load"));
+        } else {
+          setTimeout(poll, 100);
+        }
+      })();
+    });
+  }
+
+  async function handleGoogleCredential(response) {
+    authError.hidden = true;
+    try {
+      const res = await fetch(apiUrl("/api/v1/auth/google"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential: response.credential }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Google sign-in failed.");
+
+      state.token = data.access_token;
+      state.userId = data.user_id;
+      localStorage.setItem("mindful_token", state.token);
+      localStorage.setItem("mindful_user_id", state.userId);
+      enterChat();
+    } catch (err) {
+      authError.textContent = err.message;
+      authError.hidden = false;
+    }
+  }
+
+  // Fetches the client ID from the backend rather than hardcoding it here —
+  // one source of truth in .env instead of a value that would otherwise
+  // need to be kept in sync between this static file and every deployment
+  // target. Not a secret either way (Google embeds it in every
+  // browser-issued ID token regardless), just avoids drift.
+  async function initGoogleSignIn() {
+    try {
+      const res = await fetch(apiUrl("/api/v1/auth/config"));
+      const data = await res.json();
+      if (!data.google_client_id) return; // not configured server-side
+
+      await waitForGoogleSDK();
+      google.accounts.id.initialize({
+        client_id: data.google_client_id,
+        callback: handleGoogleCredential,
+      });
+      const container = $("google-signin-container");
+      google.accounts.id.renderButton(container, {
+        theme: "outline",
+        size: "large",
+        width: 320,
+      });
+      container.hidden = false;
+      $("google-signin-divider").hidden = false;
+    } catch (err) {
+      // Non-fatal — email/password auth still works without this.
+      console.warn("Google Sign-In unavailable:", err);
+    }
+  }
+
+  // ---------------------------------------------------------
   // Boot
   // ---------------------------------------------------------
   updateTtsButton();
   if (state.token && state.userId) {
     enterChat();
+  } else {
+    initGoogleSignIn();
   }
 })();

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Mindful — AI Support Companion</title>
 <link rel="stylesheet" href="/style.css">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 
@@ -16,6 +17,13 @@
       <h1>Mindful</h1>
       <p class="brand-sub">A quiet space to talk things through</p>
     </div>
+
+    <!-- Google renders its own button inside this div (see app.js
+         initGoogleSignIn) — sits outside the login/register tabs below
+         since Google's flow doesn't distinguish the two: it signs you in
+         if the account exists, creates one if it doesn't, either way. -->
+    <div id="google-signin-container" class="google-signin-container" hidden></div>
+    <div id="google-signin-divider" class="auth-divider" hidden><span>or</span></div>
 
     <div class="tabs" role="tablist" aria-label="Authentication mode">
       <button class="tab active" data-mode="login" role="tab" aria-selected="true">Log in</button>
