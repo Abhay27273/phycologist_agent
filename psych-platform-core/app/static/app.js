@@ -1,5 +1,5 @@
 /* ============================================================
-   Mindful — frontend logic
+   Haven — frontend logic
    Same-origin static page served by FastAPI (see app/api/server.py).
    No build step, no dependencies.
    ============================================================ */
@@ -11,12 +11,12 @@
   // State
   // ---------------------------------------------------------
   const state = {
-    token: localStorage.getItem("mindful_token") || null,
-    userId: localStorage.getItem("mindful_user_id") || null,
+    token: localStorage.getItem("haven_token") || null,
+    userId: localStorage.getItem("haven_user_id") || null,
     sessionId: null,
     ws: null,
     authMode: "login",
-    ttsEnabled: localStorage.getItem("mindful_tts") === "1",
+    ttsEnabled: localStorage.getItem("haven_tts") === "1",
     recognizing: false,
     currentAssistantBubble: null,
     typingEl: null,
@@ -60,7 +60,7 @@
   }
 
   function sessionKeyFor(userId) {
-    return `mindful_session_${userId}`;
+    return `haven_session_${userId}`;
   }
 
   function getOrCreateSessionId(userId) {
@@ -167,8 +167,8 @@
 
       state.token = data.access_token;
       state.userId = data.user_id;
-      localStorage.setItem("mindful_token", state.token);
-      localStorage.setItem("mindful_user_id", state.userId);
+      localStorage.setItem("haven_token", state.token);
+      localStorage.setItem("haven_user_id", state.userId);
 
       enterChat();
     } catch (err) {
@@ -372,7 +372,7 @@
 
   ttsToggle.addEventListener("click", () => {
     state.ttsEnabled = !state.ttsEnabled;
-    localStorage.setItem("mindful_tts", state.ttsEnabled ? "1" : "0");
+    localStorage.setItem("haven_tts", state.ttsEnabled ? "1" : "0");
     if (!state.ttsEnabled && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -397,8 +397,8 @@
       state.ws = null;
     }
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-    localStorage.removeItem("mindful_token");
-    localStorage.removeItem("mindful_user_id");
+    localStorage.removeItem("haven_token");
+    localStorage.removeItem("haven_user_id");
     state.token = null;
     state.userId = null;
     messageList.querySelectorAll(".msg, .typing-dots").forEach((el) => el.remove());
@@ -415,7 +415,12 @@
   // ---------------------------------------------------------
   // Google Sign-In
   // ---------------------------------------------------------
-  function waitForGoogleSDK(timeoutMs = 5000) {
+  // 12s, not 5s: this network runs outbound HTTPS through a corporate
+  // TLS-inspecting proxy (confirmed earlier — certs get re-signed by
+  // Netskope), which adds real latency to loading a third-party script like
+  // Google's. 5s was cutting it close enough to plausibly explain the
+  // button never appearing.
+  function waitForGoogleSDK(timeoutMs = 12000) {
     return new Promise((resolve, reject) => {
       const start = Date.now();
       (function poll() {
@@ -443,8 +448,8 @@
 
       state.token = data.access_token;
       state.userId = data.user_id;
-      localStorage.setItem("mindful_token", state.token);
-      localStorage.setItem("mindful_user_id", state.userId);
+      localStorage.setItem("haven_token", state.token);
+      localStorage.setItem("haven_user_id", state.userId);
       enterChat();
     } catch (err) {
       authError.textContent = err.message;

@@ -1,5 +1,5 @@
 /* ============================================================
-   Mindful — minimalist, calm design system
+   Haven — minimalist, calm design system
    Principles: generous whitespace, muted palette, system fonts,
    subtle motion, no visual noise. Dark mode via prefers-color-scheme.
    ============================================================ */
@@ -72,13 +72,14 @@ body { overflow: hidden; }
 [hidden] { display: none !important; }
 
 /* ---------- Brand mark ---------- */
+/* An SVG <use> of #haven-mark (defined once in index.html) — the badge
+   fills its own square via <rect rx>, so sizing/depth is all that's needed
+   here, not a background. */
 .brand-mark {
   display: inline-block;
   width: 40px;
   height: 40px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, var(--accent-strong), var(--accent) 70%);
-  box-shadow: var(--shadow);
+  filter: drop-shadow(0 1px 2px rgba(30, 26, 20, 0.18));
 }
 .brand-mark.small { width: 26px; height: 26px; }
 

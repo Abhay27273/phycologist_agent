@@ -3,18 +3,45 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Mindful — AI Support Companion</title>
+<title>Haven — AI Support Companion</title>
 <link rel="stylesheet" href="/style.css">
+<!-- Favicon: same badge mark as the in-page logo below, baked to a static
+     data URI since favicons render in a separate context with no access to
+     this page's CSS variables — colors are hardcoded here only, matching
+     the light-theme palette in style.css. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect x='2' y='2' width='36' height='36' rx='10' fill='%23587b6b'/%3E%3Ccircle cx='13.5' cy='14' r='3.3' fill='%23ffffff'/%3E%3Ccircle cx='26.5' cy='14' r='3.3' fill='%23ffffff'/%3E%3Ccircle cx='20' cy='22' r='8.5' fill='%23ffffff'/%3E%3C/svg%3E">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
+
+<!-- Logo, defined once — both usages below reference it via <use>, so the
+     mark stays in sync everywhere and CSS variables (dark mode included)
+     apply naturally since this lives in the same document, unlike the
+     favicon above.
+
+     A rounded-square badge holding a simple abstract form — a rounded body
+     with two small nubs — in the spirit of the friendly badge-mascot style
+     common to modern dev-tool app icons (Kiro's icon was the reference
+     point), reinterpreted with Haven's own sage-green palette rather than
+     copying any existing product's actual mark. Deliberately left
+     faceless/quiet rather than given eyes or an expression: a calm,
+     wordless presence fits a mental-health companion's tone better than an
+     overtly cute cartoon mascot would. -->
+<svg style="display:none" aria-hidden="true">
+  <symbol id="haven-mark" viewBox="0 0 40 40">
+    <rect x="2" y="2" width="36" height="36" rx="10" fill="var(--accent-strong)"/>
+    <circle cx="13.5" cy="14" r="3.3" fill="var(--accent-contrast)"/>
+    <circle cx="26.5" cy="14" r="3.3" fill="var(--accent-contrast)"/>
+    <circle cx="20" cy="22" r="8.5" fill="var(--accent-contrast)"/>
+  </symbol>
+</svg>
 
 <!-- ==================== AUTH SCREEN ==================== -->
 <main id="auth-screen" class="screen">
   <div class="auth-card">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <h1>Mindful</h1>
+      <svg class="brand-mark" aria-hidden="true"><use href="#haven-mark"/></svg>
+      <h1>Haven</h1>
       <p class="brand-sub">A quiet space to talk things through</p>
     </div>
 
@@ -49,8 +76,8 @@
 <main id="chat-screen" class="screen" hidden>
   <header class="chat-header">
     <div class="header-left">
-      <span class="brand-mark small" aria-hidden="true"></span>
-      <span class="header-title">Mindful</span>
+      <svg class="brand-mark small" aria-hidden="true"><use href="#haven-mark"/></svg>
+      <span class="header-title">Haven</span>
     </div>
     <div class="header-right">
       <span id="risk-badge" class="risk-badge" data-level="LOW" title="Current session risk level">●&nbsp;steady</span>

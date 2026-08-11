@@ -1,5 +1,5 @@
 /* ============================================================
-   Mindful — real-time voice call orchestration.
+   Haven — real-time voice call orchestration.
    Two AudioContexts (capture @16kHz for STT, playback @24kHz for TTS),
    each backed by an AudioWorklet (see audio-capture.js / audio-playback.js).
    Reads auth state from localStorage — the same keys app.js writes —
@@ -34,12 +34,12 @@
   };
 
   function sessionKeyFor(userId) {
-    return `mindful_session_${userId}`;
+    return `haven_session_${userId}`;
   }
 
   function authState() {
-    const token = localStorage.getItem("mindful_token");
-    const userId = localStorage.getItem("mindful_user_id");
+    const token = localStorage.getItem("haven_token");
+    const userId = localStorage.getItem("haven_user_id");
     if (!token || !userId) return null;
     const sessionId = localStorage.getItem(sessionKeyFor(userId));
     if (!sessionId) return null;
