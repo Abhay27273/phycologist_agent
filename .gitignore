@@ -1,7 +1,10 @@
-# Environment / secrets — never commit real API keys or credentials
-.env
-.env.local
-*.env
+# Environment / secrets — never commit real API keys or credentials.
+# .env* (not *.env) is deliberate: *.env only matches names ENDING in
+# .env, which misses timestamped backups like .env.backup.sqlite.<ts> —
+# exactly the kind of file the DB migration created, containing the real
+# Postgres connection string with password. Verified this gap existed
+# 2026-08-11 before it could leak anything.
+.env*
 !.env.example
 
 # Python

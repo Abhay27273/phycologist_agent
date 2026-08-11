@@ -36,7 +36,12 @@ redis[asyncio]==5.0.8
 # Persistent LangGraph checkpointer (Phase 1.2)
 langgraph-checkpoint-postgres
 langgraph-checkpoint-sqlite
-psycopg[async,pool]
+# [binary] bundles a self-contained libpq — [async,pool] alone needs a
+# system libpq, which Linux has via apt but Windows does not, so
+# init_graph()'s Postgres checkpointer (workflow.py) failed at startup with
+# "no pq wrapper available" on a Windows dev machine. binary works
+# identically on Linux and removes that platform gap.
+psycopg[binary,async,pool]
 
 # Testing (latency benchmarks + unit tests)
 pytest==8.3.4

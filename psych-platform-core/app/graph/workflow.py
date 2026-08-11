@@ -182,26 +182,39 @@ async def init_graph():
 
     if db_url.startswith("postgresql") or db_url.startswith("postgres://"):
         # Production: persistent PostgreSQL checkpointer
-        from psycopg_pool import AsyncConnectionPool
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
         # psycopg3 uses a plain DSN (no dialect prefix)
         dsn = db_url.replace("postgresql+asyncpg://", "postgresql://").replace(
             "postgresql+psycopg://", "postgresql://"
         )
-        pool = AsyncConnectionPool(
-            conninfo=dsn,
-            max_size=5,
-            kwargs={"autocommit": True, "prepare_threshold": 0},
-            open=False,
-        )
-        await pool.open()
-        checkpointer = AsyncPostgresSaver(pool)
+        # A single AsyncConnection via from_conn_string() — deliberately NOT
+        # AsyncConnectionPool. Diagnosed live on a Windows dev machine: the
+        # pool's connections are established by a background maintenance
+        # THREAD, which creates its own event loop rather than inheriting the
+        # main thread's asyncio.WindowsSelectorEventLoopPolicy (set in
+        # server.py) — that background thread's loop defaulted to
+        # ProactorEventLoop, which psycopg's async mode outright refuses to
+        # use. The pool's open() returned instantly regardless (default
+        # wait=False doesn't confirm anything actually connected), so the
+        # first real caller then waited the full 30s for a connection that
+        # was never coming, with the real "cannot use ProactorEventLoop"
+        # error only visible in the pool's own internal retry-loop logging,
+        # not surfaced to the caller. A single connection on the main
+        # thread's (correctly Selector) loop sidesteps the whole class of
+        # bug — confirmed working directly in isolation before this change.
+        # Linux is unaffected either way (no Proactor/Selector split there),
+        # so this is a no-op behavior change in prod, not a platform-specific
+        # branch — same as the existing SQLite branch below, which already
+        # manually drives from_conn_string()'s context manager to keep the
+        # connection alive for the app's lifetime instead of one `async with`.
+        _saver_ctx = AsyncPostgresSaver.from_conn_string(dsn)
+        checkpointer = await _saver_ctx.__aenter__()
         await checkpointer.setup()
         psych_graph = workflow.compile(checkpointer=checkpointer)
 
         async def _cleanup():
-            await pool.close()
+            await _saver_ctx.__aexit__(None, None, None)
 
         _checkpointer_cleanup = _cleanup
         logger.info("LangGraph checkpointer → AsyncPostgresSaver (PostgreSQL)")
