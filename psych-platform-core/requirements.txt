@@ -9,6 +9,7 @@ google-auth  # already a transitive dep via langchain-google-genai; pinned
              # (app/api/routes/auth.py) depends on it directly, not just
              # incidentally through Gemini's client
 langchain-groq
+langchain-openai  # OpenAI-compatible client, shared by OpenRouterService and NebiusService (Token Factory)
 langchain-huggingface
 langchain-experimental
 sentence-transformers==5.2.2

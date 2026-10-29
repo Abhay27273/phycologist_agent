@@ -1,6 +1,23 @@
-# 🧠 AI Psychologist Platform (Core API)
+# 🧠 Haven — AI Psychologist Platform (Core API)
 
 > **A Clinical-Grade, Multimodal Cognitive Architecture for Mental Health Support.**
+
+## 🏆 Nebius x NVIDIA Global AI Hackathon
+
+This project predates the hackathon (it started as a broader mental-health
+platform build). For this submission, the therapeutic response generation
+path was rewired to run on **Nebius Token Factory**, using **NVIDIA Nemotron
+(`nvidia/nemotron-3-super-120b-a12b`)** as the primary LLM tier — see
+[`app/services/nebius_service.py`](psych-platform-core/app/services/nebius_service.py)
+and the wiring in
+[`app/graph/workflow.py`](psych-platform-core/app/graph/workflow.py). Every
+therapeutic reply the app generates is produced by Nemotron running on
+Nebius's inference API; the existing Groq/Gemini/OpenRouter chain remains
+only as an automatic fallback if Nebius is unreachable.
+
+Track: **Best Apps and Agents** — Haven is a stateful, safety-first mental
+health support agent (mood/risk detection, clinical RAG, deterministic
+crisis routing) powered by Nemotron through Token Factory.
 
 ## 📖 Overview
 This project is an advanced AI backend designed to simulate therapeutic interaction. Unlike standard chatbots, it utilizes a **Stateful Cognitive Architecture (LangGraph)** to maintain emotional permanence, track user psychological profiles, and apply clinical frameworks (CBT/DBT) via **Retrieval Augmented Generation (RAG)**.

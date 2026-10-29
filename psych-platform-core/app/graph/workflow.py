@@ -107,6 +107,24 @@ else:
     therapy_llm_service = gemini_service
     logger.info("SentimentNode + TherapyNode → Gemini")
 
+# Nebius Token Factory (NVIDIA Nemotron) — primary generation tier when
+# configured. Prepended only to therapy_llm_service, not sentiment_service:
+# sentiment/risk routing is latency-sensitive (see 2026-08-06 comment above —
+# a slow first provider there stalled voice turn-taking by 10-40s), and
+# Nemotron's quality matters for the actual therapeutic response, not the
+# internal routing signal. The existing waterfall above becomes the fallback
+# tier, so a Nebius outage degrades gracefully instead of breaking the app.
+if settings.NEBIUS_API_KEY:
+    from app.services.nebius_service import NebiusService
+    from app.services.fallback_llm_service import FallbackLLMService
+    _nebius = NebiusService()
+    therapy_llm_service = FallbackLLMService(_nebius, therapy_llm_service)
+    logger.info(
+        "Nebius Token Factory (%s) set as primary generation tier; "
+        "prior waterfall demoted to fallback.",
+        settings.NEBIUS_MODEL,
+    )
+
 
 # Module-level graph var — None until init_graph() runs in server lifespan.
 # chat.py imports this; reads None if lifespan hasn't fired (e.g., tests).

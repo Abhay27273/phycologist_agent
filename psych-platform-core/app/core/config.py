@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = Field(default="", description="OpenRouter API key")
     OPENROUTER_MODEL: str = "meta-llama/llama-3.3-70b-instruct:free"
 
+    # Nebius Token Factory — NVIDIA Nemotron inference (OpenAI-compatible API)
+    NEBIUS_API_KEY: str = Field(default="", description="Nebius Token Factory API key")
+    NEBIUS_BASE_URL: str = "https://api.tokenfactory.nebius.com/v1"
+    NEBIUS_MODEL: str = "nvidia/nemotron-3-super-120b-a12b"
+
     # RAG / Vector DB — backend selector
     VECTOR_DB_BACKEND: Literal["pinecone", "qdrant"] = "pinecone"
 
