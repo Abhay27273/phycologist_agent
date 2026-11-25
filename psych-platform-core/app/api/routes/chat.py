@@ -17,6 +17,7 @@ from app.api.limiter import limiter
 from app.core.logging import logging
 from app.graph.nodes.sentiment import _build_multimodal_hint, _detect_language
 from app.graph.nodes.crisis import crisis_message_for
+from app.services.crisis_rules import apply_crisis_floor
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -294,6 +295,8 @@ async def stream_chat_endpoint(
             )
             mood = analysis.get("mood", "neutral")
             risk_score = int(analysis.get("risk_score", 0))
+            # Deterministic floor: the model may miss indirect cues (see crisis_rules.py).
+            risk_score = apply_crisis_floor(payload.message, risk_score, source="chat_stream")
             language = _detect_language(payload.message)
             is_crisis = risk_score >= 8
             level = _risk_level(risk_score)
@@ -429,6 +432,8 @@ async def stream_sentences_endpoint(
             )
             mood = analysis.get("mood", "neutral")
             risk_score = int(analysis.get("risk_score", 0))
+            # Deterministic floor: the model may miss indirect cues (see crisis_rules.py).
+            risk_score = apply_crisis_floor(payload.message, risk_score, source="chat_stream")
             language = _detect_language(payload.message)
             is_crisis = risk_score >= 8
             level = _risk_level(risk_score)
@@ -577,6 +582,8 @@ async def websocket_chat(
                 )
                 mood = analysis.get("mood", "neutral")
                 risk_score = int(analysis.get("risk_score", 0))
+                # Deterministic floor: the model may miss indirect cues (see crisis_rules.py).
+                risk_score = apply_crisis_floor(message, risk_score, source="chat_ws")
                 language = _detect_language(message)
                 is_crisis = risk_score >= 8
                 level = _risk_level(risk_score)
