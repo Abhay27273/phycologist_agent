@@ -1,6 +1,7 @@
 import json
 import asyncio
 import re
+import time
 from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,8 +16,21 @@ from app.services.memory_service import extract_session_insights, MemoryService
 from app.api.dependencies import get_current_user
 from app.api.limiter import limiter
 from app.core.logging import logging
-from app.graph.nodes.sentiment import _build_multimodal_hint, _detect_language
+from app.graph.nodes.sentiment import SentimentNode, _build_multimodal_hint, _detect_language
+from app.graph.nodes.strategy import StrategyNode
+from app.graph.nodes.therapy import _needs_rag, _affect_valence_for_mood, _register_for_language
 from app.graph.nodes.crisis import crisis_message_for
+from app.services.crisis_rules import apply_crisis_floor
+from app.services.therapeutic_prompt import build_therapeutic_system_prompt
+
+# Web-chat WebSocket pipeline nodes — same construction voice.py uses, so the
+# text and voice experiences select moves and score risk identically.
+_ws_sentiment_node = SentimentNode(sentiment_service, fallback_llm_service=gemini_service)
+_ws_strategy_node = StrategyNode()
+
+# Upper bound on how long a turn waits for clinical retrieval before replying
+# without grounding (typical 1.4s; one 15s outlier measured).
+WS_RAG_TIMEOUT_S = 4.0
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -294,6 +308,8 @@ async def stream_chat_endpoint(
             )
             mood = analysis.get("mood", "neutral")
             risk_score = int(analysis.get("risk_score", 0))
+            # Deterministic floor: the model may miss indirect cues (see crisis_rules.py).
+            risk_score = apply_crisis_floor(payload.message, risk_score, source="chat_stream")
             language = _detect_language(payload.message)
             is_crisis = risk_score >= 8
             level = _risk_level(risk_score)
@@ -429,6 +445,8 @@ async def stream_sentences_endpoint(
             )
             mood = analysis.get("mood", "neutral")
             risk_score = int(analysis.get("risk_score", 0))
+            # Deterministic floor: the model may miss indirect cues (see crisis_rules.py).
+            risk_score = apply_crisis_floor(payload.message, risk_score, source="chat_stream")
             language = _detect_language(payload.message)
             is_crisis = risk_score >= 8
             level = _risk_level(risk_score)
@@ -536,6 +554,11 @@ async def websocket_chat(
     await websocket.accept()
     logger.info("WebSocket connected | session=%s | user=%s", session_id, authenticated_user_id)
 
+    # Per-connection conversational state for StrategyNode (voice keeps the
+    # same two values on its session object).
+    last_three_moves: list[str] = []
+    relevant_context = ""
+
     try:
         while True:
             raw = await websocket.receive_text()
@@ -559,34 +582,47 @@ async def websocket_chat(
                 continue
 
             try:
+                t_turn = time.perf_counter()
+                tm: dict[str, float] = {}          # per-stage ms, logged once per turn
                 _, session = await _get_or_create_user_session(db, user_id, session_id)
                 db.add(ChatMessage(session_id=session.id, role="user", content=message))
                 await db.commit()
+                tm["db_user_msg"] = (time.perf_counter() - t_turn) * 1000
 
-                multimodal_hint = _build_multimodal_hint(
-                    {"audio_features": audio_raw, "video_features": video_raw}
-                )
+                # Same calibrated sentiment path the graph and voice use
+                # (passive-ideation scoring, language, cognitive distortion,
+                # multimodal hint, and the deterministic crisis-rule net in
+                # front of the model) instead of the bare analyze_sentiment().
                 # Patient-memory recall joins the gather so it overlaps the
                 # sentiment round-trip instead of adding to the critical path.
-                # Hard-filtered by user_id inside retrieve_patient_memory, and
-                # returns [] if the collection was never built.
-                analysis, history, past_memories = await asyncio.gather(
-                    sentiment_service.analyze_sentiment(message + multimodal_hint),
+                # Only ONE query on the shared AsyncSession runs concurrently
+                # here (_load_history) — a session is not safe for concurrent use.
+                _t = time.perf_counter()
+                sentiment_state = {
+                    "messages": [{"role": "user", "content": message}],
+                    "user_id": user_id,
+                    "audio_features": audio_raw,
+                    "video_features": video_raw,
+                }
+                sentiment_result, history, past_memories = await asyncio.gather(
+                    _ws_sentiment_node(sentiment_state),
                     _load_history(db, session_id),
                     rag_service.retrieve_patient_memory(user_id=user_id, query=message, k=3),
                 )
-                mood = analysis.get("mood", "neutral")
-                risk_score = int(analysis.get("risk_score", 0))
-                language = _detect_language(message)
-                is_crisis = risk_score >= 8
+                tm["sentiment_history_memory"] = (time.perf_counter() - _t) * 1000
+                mood = sentiment_result["current_mood"]
+                risk_score = sentiment_result["risk_score"]
+                language = sentiment_result["detected_language"]
+                cognitive_distortion = sentiment_result["cognitive_distortion_detected"]
+                is_crisis = sentiment_result["is_crisis"]
                 level = _risk_level(risk_score)
-                await _record_trajectory(db, user_id, session_id, mood, risk_score)
 
                 await websocket.send_text(
                     json.dumps({"type": "meta", "mood": mood, "risk_score": risk_score})
                 )
 
                 full_response = ""
+                move: str | None = None
 
                 if is_crisis:
                     full_response = crisis_message_for(language)
@@ -594,48 +630,134 @@ async def websocket_chat(
                         json.dumps({"type": "sentence", "content": full_response})
                     )
                 else:
-                    _clinical = {"anxious", "depressed", "lonely", "angry", "stressed",
-                                 "fearful", "hopeless", "guilty", "confused"}
-                    if len(message.split()) >= 4 or mood in _clinical:
-                        context = await rag_service.retrieve_clinical_context(message, mood)
-                    else:
-                        context = ""
+                    # `history` is loaded after this turn's user message was saved,
+                    # so it already ends with it — appending it again sent the
+                    # model the same message twice (and inflated StrategyNode's
+                    # turn count by one).
+                    if not (history and history[-1].get("role") == "user"
+                            and history[-1].get("content") == message):
+                        history.append({"role": "user", "content": message})
 
-                    # Keep recalled personal history under its own heading so
-                    # the model does not read the user's own past words as
-                    # clinical evidence (same separation voice.py uses).
+                    # Same move selection voice and the graph use. Previously the
+                    # web chat was hard-wired to "simple_reflection" (via the
+                    # legacy prompt), which never varies and never offers anything.
+                    _t = time.perf_counter()
+                    strategy_result = await _ws_strategy_node({
+                        "risk_score": risk_score,
+                        "current_mood": mood,
+                        "cognitive_distortion_detected": cognitive_distortion,
+                        "last_three_moves": last_three_moves,
+                        "messages": history,
+                        "relevant_context": relevant_context,
+                        "user_id": user_id,
+                    })
+                    move = strategy_result["selected_move"]
+                    last_three_moves = strategy_result["last_three_moves"]
+                    tm["strategy"] = (time.perf_counter() - _t) * 1000
+
+                    longitudinal_context = await _load_longitudinal_context(db, user_id, session_id)
+
+                    # Clinical retrieval is the slowest step (1.4s typical, 15s
+                    # worst case measured) and the prompt builder only USES it for
+                    # moves in MOVES_THAT_USE_CLINICAL_KB — for every other move
+                    # the result was fetched and thrown away. Fetch only when
+                    # needed, and cap the wait: the guidance prompt has a safe
+                    # no-grounding fallback, so a slow retrieval degrades the
+                    # grounding rather than the whole reply.
+                    _t = time.perf_counter()
+                    context = ""
+                    if _needs_rag(message, mood, move):
+                        try:
+                            context = await asyncio.wait_for(
+                                rag_service.retrieve_clinical_context(message, mood),
+                                timeout=WS_RAG_TIMEOUT_S,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "Clinical retrieval exceeded %.1fs | move=%s — continuing without grounding",
+                                WS_RAG_TIMEOUT_S, move,
+                            )
+                    relevant_context = context
+                    tm["rag"] = (time.perf_counter() - _t) * 1000
+
+                    # Kept under separate headings: they carry different epistemic
+                    # weight and the model must not read the user's own past words
+                    # as clinical evidence (same separation voice.py uses).
+                    blocks = []
+                    if longitudinal_context:
+                        blocks.append(f"[Previous sessions]\n{longitudinal_context}")
                     if past_memories:
                         recalled = "\n".join(f"- {m}" for m in past_memories)
-                        recall_block = (
-                            "[You may recall from earlier conversations with "
-                            f"this person]\n{recalled}"
+                        blocks.append(
+                            "[You may recall from earlier conversations with this "
+                            f"person]\n{recalled}"
                         )
-                        context = f"{recall_block}\n\n{context}" if context else recall_block
+                    if context:
+                        blocks.append(f"[Clinical evidence]\n{context}")
+                    merged_context = "\n\n".join(blocks)
 
-                    history.append({"role": "user", "content": message})
+                    _t = time.perf_counter()
+                    style_exemplars = await rag_service.retrieve_style_exemplars(
+                        move=move,
+                        affect_valence=_affect_valence_for_mood(mood),
+                        register=_register_for_language(language),
+                        k=2,
+                    )
+                    tm["exemplars"] = (time.perf_counter() - _t) * 1000
+                    system_prompt = build_therapeutic_system_prompt(
+                        context=merged_context,
+                        mood=mood,
+                        move=move,
+                        language=language,
+                        style_exemplars=style_exemplars,
+                    )
 
                     buf = ""
-                    async for token in sentiment_service.stream_therapeutic_response(
-                        history=history, context=context, mood=mood, language=language
+                    _t_llm = time.perf_counter()
+                    # therapy_llm_service (generation chain), not sentiment_service
+                    # (Groq-first, built for the fast routing call).
+                    async for piece in therapy_llm_service.stream_response_for_move(
+                        history=history, system_prompt=system_prompt
                     ):
-                        full_response += token
-                        buf += token
+                        if "llm_first_token" not in tm:
+                            tm["llm_first_token"] = (time.perf_counter() - _t_llm) * 1000
+                        full_response += piece
+                        buf += piece
                         sentences, buf = _flush_sentences(buf)
                         for sentence in sentences:
+                            if "to_first_sentence_total" not in tm:
+                                tm["to_first_sentence_total"] = (time.perf_counter() - t_turn) * 1000
                             await websocket.send_text(
                                 json.dumps({"type": "sentence", "content": sentence})
                             )
 
                     if buf.strip():
+                        if "to_first_sentence_total" not in tm:
+                            tm["to_first_sentence_total"] = (time.perf_counter() - t_turn) * 1000
                         await websocket.send_text(
                             json.dumps({"type": "sentence", "content": buf.strip()})
                         )
+                    tm["llm_stream_total"] = (time.perf_counter() - _t_llm) * 1000
 
                 await websocket.send_text(json.dumps({"type": "done", "risk_level": level}))
+                tm["total_to_done"] = (time.perf_counter() - t_turn) * 1000
+                logger.info(
+                    "Chat WS timing | session=%s | crisis=%s | move=%s | %s",
+                    session_id, is_crisis, move,
+                    " | ".join(f"{k}={v:.0f}ms" for k, v in tm.items()),
+                )
 
+                # Trajectory bookkeeping used to sit BEFORE the reply (it blocked
+                # the first sentence); nothing in the reply depends on it, so it
+                # now runs after the user already has their answer.
+                await _record_trajectory(db, user_id, session_id, mood, risk_score)
+
+                # selected_move is persisted so response-quality problems are
+                # diagnosable straight from the DB (voice already does this).
                 ai_msg = ChatMessage(
                     session_id=session.id, role="assistant",
                     content=full_response, detected_mood=mood,
+                    selected_move=move,
                 )
                 db.add(ai_msg)
                 if level != "LOW":

@@ -24,6 +24,7 @@ Design principles (CONVERSATIONAL_CORE_RESEARCH.md §2.2):
 from __future__ import annotations
 
 import random
+import re
 import logging
 from app.domain.state import PsychologicalState
 from app.services.therapeutic_prompt import MOVE_SET
@@ -72,6 +73,75 @@ _WEIGHTS_MID_RISK: list[tuple[str, float]] = [
 # user to answer: sit_with_it ("Do not ask a question"), affirmation ("No
 # question."), normalise (a two-sentence statement).
 _SILENT_MOVES = frozenset({"sit_with_it", "affirmation", "normalise"})
+
+
+# ---------------------------------------------------------------------------
+# Guidance ("what should I do?") — answering a direct request for direction
+# ---------------------------------------------------------------------------
+# Observed on the web chat: when someone explicitly asked what to do, the
+# reply deflected into another reflection+question in 3 of 6 test
+# conversations ("Please just tell me what to do." -> "What's one small thing
+# you've tried?"). Being asked for direction and answering only with a
+# question reads as evasion. A direct request now selects the guidance move;
+# otherwise guidance is offered proactively, but only after the person has had
+# a few turns of being heard (turn_index >= 4), at most once per three moves.
+
+_ADVICE_REQUEST_RE = re.compile(
+    r"\bwhat (?:should|can|could|shall) i do\b"
+    r"|\bwhat (?:would|do|can) you (?:suggest|recommend|advise)\b"
+    r"|\bwhat to do\b"
+    r"|\b(?:any|some|your)\s+(?:advice|tips?|suggestions?)\b"
+    r"|\b(?:give|need|want|share)\s+(?:me\s+)?(?:some\s+)?(?:advice|tips?|suggestions?|guidance|direction)\b"
+    r"|\bhow (?:do|can|should|could) i (?:handle|deal|cope|stop|manage|calm|fix|overcome|get through|get over|sleep|focus|stay)\b"
+    r"|\bhow to (?:handle|deal|cope|stop|manage|calm|fix|overcome|get through|get over|sleep|focus)\b"
+    r"|\bis there (?:anything|something) (?:i|we) can do\b"
+    r"|\bcan you (?:help|suggest|advise|recommend)\b"
+    # Hinglish
+    r"|\bkya karu(?:n)?\b|\bkya karna chahiye\b|\bmujhe kya karna\b|\bkya kare\b"
+    r"|\bkoi (?:salah|upay|tarika|solution)\b|\bkaise (?:handle|deal|sambhal|nipat)\b"
+    # Devanagari - Sarvam speech-to-text returns Hindi in this script. No \b:
+    # Python's \w does not match Devanagari vowel signs, so word boundaries
+    # misfire inside these words.
+    r"|क्या\s+करूँ|क्या\s+करूं|क्या\s+करु|क्या\s+करना\s+(?:चाहिए|होगा|पड़ेगा)|क्या\s+करें"
+    r"|कोई\s+(?:सलाह|उपाय|तरीका|हल|समाधान)|(?:सलाह|सुझाव)\s+(?:दो|दीजिए|दीजिये|चाहिए)"
+    r"|कैसे\s+(?:संभालूं|संभालूँ|संभालें|निपटूं|निपटूँ|निपटें)",
+    re.IGNORECASE,
+)
+
+# "I don't want advice, I just need to vent" must be respected, not overridden.
+_NO_ADVICE_RE = re.compile(
+    r"\b(?:don'?t|do not|dont|not|no|never)\b[^.?!]{0,25}\b(?:advice|tips?|suggestions?|solutions?|fix(?:ing)?)\b"
+    r"|\bjust (?:want|need) (?:to )?(?:vent|talk|be heard|listen)\b"
+    # Hinglish / Hindi: "advice nahi chahiye", "bas sun lo", "सलाह नहीं चाहिए", "बस सुन लो"
+    r"|\b(?:advice|salah|suggestion|tips?|upay)\s+(?:nahi|nahin|mat)\b|\bbas\s+(?:sun|suno|sunna|baat)\b"
+    r"|(?:सलाह|सुझाव|उपाय)\s+(?:नहीं|मत)|बस\s+(?:सुन|सुनो|बात)|सिर्फ़?\s+सुन",
+    re.IGNORECASE,
+)
+
+
+def _last_user_text(messages) -> str:
+    for m in reversed(messages or []):
+        if isinstance(m, dict) and m.get("role") == "user":
+            return m.get("content", "") or ""
+        if getattr(m, "type", None) == "human":
+            return getattr(m, "content", "") or ""
+    return ""
+
+
+def explicit_advice_request(text: str) -> bool:
+    """True when the user is directly asking what to do (and has not said they don't want advice)."""
+    t = (text or "").replace("’", "'")
+    if not t.strip() or _NO_ADVICE_RE.search(t):
+        return False
+    return bool(_ADVICE_REQUEST_RE.search(t))
+
+
+def _guidance_weight(turn_index: int, risk_score: int, last_three: list[str]) -> float:
+    """Proactive guidance weight: none early, none right after guidance, gentler at elevated risk."""
+    if risk_score >= 8 or turn_index < 4 or "guidance" in last_three:
+        return 0.0
+    base = 25.0 if turn_index < 6 else 40.0
+    return base * (0.4 if risk_score >= 4 else 1.0)
 
 
 def _get_weights(risk_score: int) -> list[tuple[str, float]]:
@@ -159,6 +229,22 @@ def _apply_constraints(
             if move in ("affirmation", "normalise"):
                 w = 0.0
 
+        # 5b — the very FIRST reply to a disclosure always invites the person to
+        # go on. sit_with_it ("Do not ask a question") as an opening left 2 of 6
+        # test conversations with nothing to answer ("It's sitting heavy on you
+        # right now."). It stays available from the second turn on, once there
+        # is rapport and the ~18-20% clinician baseline applies.
+        if turn_index <= 1 and move == "sit_with_it":
+            w = 0.0
+
+        # 5c — summarise_and_check needs a conversation to condense. On turns
+        # 1-3 it just recaps what was said and ends on a closed "does that sound
+        # right?" (measured 2026-11-25: every turn-3 occurrence was a recap with
+        # up to 78% of the user's own words reused, in 3 of 6 conversations).
+        # From turn 4 there is enough to synthesise.
+        if turn_index <= 3 and move == "summarise_and_check":
+            w = 0.0
+
         # 6 — never two turns in a row that give the user nothing to answer.
         # These moves are individually correct and clinically grounded
         # (sit_with_it is deliberately ~18-20% per the AnnoMI baseline), but
@@ -205,23 +291,34 @@ class StrategyNode:
         # Clinical context available if relevant_context was set last turn
         has_clinical_context = bool(state.get("relevant_context", "").strip())
 
-        weights = _get_weights(risk_score)
-        weights = _apply_constraints(
-            weights,
-            last_three,
-            bool(cognitive_distortion),
-            has_clinical_context,
-            turn_index,
-        )
+        # A direct "what should I do?" is answered, not deflected (crisis,
+        # risk >= 8, never reaches this node but is excluded here as well).
+        asked_for_advice = risk_score < 8 and explicit_advice_request(_last_user_text(messages))
 
-        move = _weighted_choice(weights)
+        if asked_for_advice:
+            move = "guidance"
+        else:
+            weights = _get_weights(risk_score)
+            weights = _apply_constraints(
+                weights,
+                last_three,
+                bool(cognitive_distortion),
+                has_clinical_context,
+                turn_index,
+            )
+            g = _guidance_weight(turn_index, risk_score, last_three)
+            if g > 0:
+                weights.append(("guidance", g))
+
+            move = _weighted_choice(weights)
 
         # Trim last_three to 3 entries
         updated_last_three = (last_three + [move])[-3:]
 
         logger.info(
-            "StrategyNode | move=%s mood=%s risk=%d distortion=%s turn=%d | user=%s",
-            move, mood, risk_score, cognitive_distortion, turn_index, state.get("user_id"),
+            "StrategyNode | move=%s mood=%s risk=%d distortion=%s turn=%d asked_advice=%s | user=%s",
+            move, mood, risk_score, cognitive_distortion, turn_index, asked_for_advice,
+            state.get("user_id"),
         )
 
         return {

@@ -81,7 +81,14 @@
     </div>
     <div class="header-right">
       <span id="risk-badge" class="risk-badge" data-level="LOW" title="Current session risk level">●&nbsp;steady</span>
+      <select id="voice-lang" class="voice-lang" title="Call language: Auto follows whichever language you speak" aria-label="Call language">
+        <option value="auto">Auto</option>
+        <option value="en">English</option>
+        <option value="hi">हिन्दी</option>
+        <option value="hinglish">Hinglish</option>
+      </select>
       <button id="call-btn" class="icon-btn" title="Start voice call">📞</button>
+      <button id="video-call-btn" class="icon-btn" title="Start video call">🎥</button>
       <button id="tts-toggle" class="icon-btn" title="Toggle spoken replies" aria-pressed="false">🔈</button>
       <button id="logout-btn" class="icon-btn" title="Log out">⏻</button>
     </div>
@@ -128,7 +135,65 @@
   </div>
 </main>
 
+<!-- ==================== VIDEO CALL SCREEN ==================== -->
+<!-- Deliberately a separate screen/entry point from voice-screen above, not
+     voice + a bolted-on camera — this is its own feature, the way chat and
+     voice are already separate. Currently Phase 1 of the plan: proves live
+     facial-expression capture works (self-view + debug readout) before any
+     avatar exists. Shares the same backend voice pipeline (STT -> sentiment
+     -> strategy -> generation -> TTS) since that doesn't change; what's new
+     here is entirely client-side capture, layered in by video-call.js. -->
+<main id="video-call-screen" class="screen voice-screen" hidden>
+  <header class="voice-header">
+    <span id="video-call-risk-badge" class="risk-badge" data-level="LOW" title="Current session risk level">●&nbsp;steady</span>
+    <button id="video-call-avatar-btn" class="icon-btn" title="Change avatar (VRM model URL)">🧑</button>
+    <button id="video-call-mute-btn" class="icon-btn" title="Mute microphone" aria-pressed="false">🎙</button>
+  </header>
+
+  <div class="voice-stage">
+    <!-- VC feature, Phase 3: static VRM avatar render (Three.js),
+         see avatar.js. #video-call-orb is kept in the DOM (video-call.js
+         still drives its data-state) but hidden via CSS now that the avatar
+         canvas is the primary visual — Phase 5 will move state/mood onto
+         the avatar itself instead. -->
+    <canvas id="video-call-avatar-canvas" class="avatar-canvas"></canvas>
+    <div id="video-call-orb" class="voice-orb" data-state="idle" aria-hidden="true">
+      <div class="voice-orb-core"></div>
+    </div>
+    <p id="video-call-state-label" class="voice-state-label">Connecting…</p>
+    <p id="video-call-transcript" class="voice-transcript" aria-live="polite"></p>
+
+    <!-- Self-view so the user can see their own camera is on, plus a
+         visible debug readout proving live blendshape capture works, since
+         there's no avatar yet to show the pipeline is doing anything. Both
+         stay hidden if the camera fails/is denied — see video-call.js. -->
+    <video id="face-track-video" class="face-track-video" autoplay playsinline muted hidden></video>
+    <div id="face-track-debug" class="face-track-debug" hidden></div>
+  </div>
+
+  <div class="voice-controls">
+    <button id="video-call-end-btn" class="btn-end-call" title="End call">End call</button>
+  </div>
+</main>
+
 <script src="/app.js"></script>
+<!-- type="module" only for these two files — MediaPipe's tasks-vision and
+     Three.js are ES-module-only. Each exposes a window.Haven* global so
+     video-call.js (a plain script) can call into it, same pattern both
+     times. The importmap lets avatar.js and its GLTFLoader/three-vrm
+     imports resolve their bare specifiers without a build step. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/",
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.5.5/lib/three-vrm.module.js"
+  }
+}
+</script>
+<script type="module" src="/face-tracking.js"></script>
+<script type="module" src="/avatar.js"></script>
 <script src="/voice-call.js"></script>
+<script src="/video-call.js"></script>
 </body>
 </html>

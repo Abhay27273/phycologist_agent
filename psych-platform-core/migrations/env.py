@@ -19,9 +19,13 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 from app.core.config import settings
+from app.infrastructure.database import get_sanitized_url
+# Same sanitizer the app uses, so a plain postgresql:// URL (what Render and
+# other hosts hand out) resolves to the async driver here too. "%" is doubled
+# because set_main_option goes through ConfigParser interpolation.
 config.set_main_option(
-    "sqlalchemy.url", 
-    settings.DATABASE_URL
+    "sqlalchemy.url",
+    get_sanitized_url(settings.DATABASE_URL).replace("%", "%%"),
 )
 
 def run_migrations_offline() -> None:

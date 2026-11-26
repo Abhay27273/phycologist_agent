@@ -6,11 +6,16 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from langchain_huggingface import HuggingFaceEmbeddings
-# Must stay at module level: forces PyTorch/BLAS to load *before* LangGraph's
-# C extensions, preventing a KMP_DUPLICATE_LIB_OK access-violation on Windows.
-from sentence_transformers import CrossEncoder
+import logging
 from app.core.config import settings
+from app.services.embeddings import build_embeddings
+
+if settings.EMBEDDING_BACKEND == "local":
+    # Must stay at module level: forces PyTorch/BLAS to load *before* LangGraph's
+    # C extensions, preventing a KMP_DUPLICATE_LIB_OK access-violation on Windows.
+    # Skipped for EMBEDDING_BACKEND=hf_api, where torch isn't installed at all
+    # (the slim 512 MB deploy image) and embeddings come from hosted inference.
+    from sentence_transformers import CrossEncoder  # noqa: F401
 
 EMBED_MODEL = "BAAI/bge-base-en-v1.5"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -217,7 +222,11 @@ def _get_shared_qdrant_client():
     if _shared_qdrant_client is None:
         from qdrant_client import QdrantClient
         if settings.QDRANT_MODE == "server":
-            _shared_qdrant_client = QdrantClient(url=settings.QDRANT_URL)
+            # api_key is None for an unsecured local container, set for Qdrant Cloud.
+            _shared_qdrant_client = QdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY or None,
+            )
         else:
             project_root = Path(__file__).resolve().parent.parent.parent
             _shared_qdrant_client = QdrantClient(
@@ -228,11 +237,7 @@ def _get_shared_qdrant_client():
 
 class RAGService:
     def __init__(self, backend_override: str | None = None, redis_client=None):
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=EMBED_MODEL,
-            model_kwargs={"device": "cpu", "local_files_only": True},
-            encode_kwargs={"normalize_embeddings": True},
-        )
+        self.embeddings = build_embeddings(EMBED_MODEL)
         backend = (backend_override or settings.VECTOR_DB_BACKEND).lower()
         # clinical_kb — textbooks, guidelines, CBT/DBT manuals
         self.vector_store = self._build_vector_store(
@@ -290,6 +295,36 @@ class RAGService:
                 pass  # Redis unavailable — fall through to local cache
         self._local_cache[key] = (time.monotonic(), value)
 
+    def _qdrant_store(self, client, collection: str):
+        """Build a QdrantVectorStore for an EXISTING collection.
+
+        langchain-qdrant validates the collection on construction by embedding a
+        dummy string. With hosted embeddings that is a network call to Hugging
+        Face, which would make app boot (and every wake-up from the free tier's
+        idle sleep) depend on HF being reachable — one hiccup and the service
+        crash-loops. So in hf_api mode the embedding-based check is skipped and
+        replaced by a plain existence check. That keeps the one property callers
+        rely on: constructing a store for a collection that doesn't exist
+        FAILS (the style-exemplar / patient-memory code treats that as
+        "unavailable" and skips work instead of grinding through doomed calls).
+        """
+        from langchain_qdrant import QdrantVectorStore
+
+        if settings.EMBEDDING_BACKEND == "hf_api":
+            if not client.collection_exists(collection):
+                raise ValueError(f"Qdrant collection '{collection}' does not exist")
+            return QdrantVectorStore(
+                client=client,
+                collection_name=collection,
+                embedding=self.embeddings,
+                validate_collection_config=False,
+            )
+        return QdrantVectorStore(
+            client=client,
+            collection_name=collection,
+            embedding=self.embeddings,
+        )
+
     def _build_vector_store(
         self,
         backend: str,
@@ -311,14 +346,8 @@ class RAGService:
             )
 
         if backend == "qdrant":
-            from langchain_qdrant import QdrantVectorStore
             col = collection or settings.QDRANT_COLLECTION_NAME
-            client = _get_shared_qdrant_client()
-            return QdrantVectorStore(
-                client=client,
-                collection_name=col,
-                embedding=self.embeddings,
-            )
+            return self._qdrant_store(_get_shared_qdrant_client(), col)
 
         raise ValueError(
             f"Unknown VECTOR_DB_BACKEND: '{backend}'. Must be 'pinecone' or 'qdrant'."
@@ -508,7 +537,6 @@ class RAGService:
             def _write():
                 if self._style_backend == "qdrant":
                     from qdrant_client.models import Distance, VectorParams
-                    from langchain_qdrant import QdrantVectorStore
 
                     # Shared client — a second one would deadlock against the
                     # embedded-mode storage lock (see _get_shared_qdrant_client).
@@ -521,7 +549,7 @@ class RAGService:
                             collection_name=collection,
                             vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
                         )
-                    store = QdrantVectorStore(client=client, collection_name=collection, embedding=self.embeddings)
+                    store = self._qdrant_store(client, collection)
                 else:
                     store = self._build_vector_store(
                         self._style_backend, collection=settings.QDRANT_PATIENT_MEMORY_COLLECTION,
@@ -592,16 +620,28 @@ class RAGService:
         idiom_terms = self._expand_with_idioms(query)
         expanded_query = f"{query} {expansion} {idiom_terms}".strip()
 
-        raw_docs, expanded_docs = await asyncio.gather(
-            asyncio.to_thread(
-                self.vector_store.max_marginal_relevance_search,
-                query, k=_MMR_K, fetch_k=_MMR_FETCH_K,
-            ),
-            asyncio.to_thread(
-                self.vector_store.max_marginal_relevance_search,
-                expanded_query, k=_MMR_K, fetch_k=_MMR_FETCH_K,
-            ),
-        )
+        try:
+            raw_docs, expanded_docs = await asyncio.gather(
+                asyncio.to_thread(
+                    self.vector_store.max_marginal_relevance_search,
+                    query, k=_MMR_K, fetch_k=_MMR_FETCH_K,
+                ),
+                asyncio.to_thread(
+                    self.vector_store.max_marginal_relevance_search,
+                    expanded_query, k=_MMR_K, fetch_k=_MMR_FETCH_K,
+                ),
+            )
+        except Exception as exc:
+            # Embedding and vector search can now be network calls (hosted
+            # embeddings + Qdrant Cloud). TherapyNode treats ANY exception as a
+            # total failure and replaces the reply with a canned fallback line,
+            # so a transient retrieval hiccup would silently degrade every
+            # response. No clinical context is a far smaller loss: the LLM
+            # still answers. Not cached, so the next turn retries.
+            logging.getLogger(__name__).warning(
+                "Clinical retrieval failed, continuing without context: %s", exc
+            )
+            return ""
 
         # Merge while preserving order and removing near-duplicates by normalized content.
         docs = []

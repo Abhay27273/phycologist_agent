@@ -20,6 +20,27 @@
   const transcriptEl = $("voice-transcript");
   const riskBadge = $("voice-risk-badge");
 
+  // Call language: "auto" (default) follows whichever language the person
+  // speaks, turn by turn, like ChatGPT/Claude voice mode; en | hi | hinglish
+  // pin the call to one language if detection ever misfires. Shared with
+  // video-call.js via window since each file is its own closure.
+  const LANG_KEY = "haven_call_lang";
+  const LANGS = ["auto", "en", "hi", "hinglish"];
+  const langSelect = $("voice-lang");
+  window.getCallLanguage = () => {
+    const v = langSelect ? langSelect.value : "auto";
+    return LANGS.includes(v) ? v : "auto";
+  };
+  if (langSelect) {
+    try {
+      const saved = localStorage.getItem(LANG_KEY);
+      if (LANGS.includes(saved)) langSelect.value = saved;
+    } catch (_) { /* storage blocked: default stays English */ }
+    langSelect.addEventListener("change", () => {
+      try { localStorage.setItem(LANG_KEY, langSelect.value); } catch (_) {}
+    });
+  }
+
   const call = {
     ws: null,
     captureCtx: null,
@@ -135,7 +156,7 @@
     };
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${proto}//${location.host}/api/v1/ws/voice/${auth.sessionId}?token=${encodeURIComponent(auth.token)}`;
+    const wsUrl = `${proto}//${location.host}/api/v1/ws/voice/${auth.sessionId}?token=${encodeURIComponent(auth.token)}&lang=${encodeURIComponent(getCallLanguage())}`;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     call.ws = ws;

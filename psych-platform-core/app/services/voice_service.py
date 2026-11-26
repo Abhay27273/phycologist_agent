@@ -223,6 +223,14 @@ class DeepgramTTSStream:
         # Set when Deepgram confirms it has finished generating/sending audio
         # for the most recent speak() call — see wait_until_flushed().
         self._flushed_event = asyncio.Event()
+        # A reply is flushed more than once (after its first sentence, then at
+        # the end), and Deepgram confirms each flush separately. One shared
+        # flag let a LATE confirmation of the first flush mark the whole reply
+        # finished while the rest was still being synthesized: "done" was sent
+        # early, barge-in gating dropped, and the tail of the reply played over
+        # the start of the next turn. Count outstanding flushes instead.
+        self._pending_flushes = 0
+        self._has_unflushed_text = False
 
         self._conn.on(SpeakWebSocketEvents.AudioData, self._on_audio)
         self._conn.on(SpeakWebSocketEvents.Flushed, self._on_flushed)
@@ -233,7 +241,9 @@ class DeepgramTTSStream:
             await self._queue.put((TTS_AUDIO, data))
 
     async def _on_flushed(self, _conn, flushed=None, **_kwargs) -> None:
-        self._flushed_event.set()
+        self._pending_flushes = max(0, self._pending_flushes - 1)
+        if self._pending_flushes == 0:
+            self._flushed_event.set()
         await self._queue.put((TTS_FLUSHED, None))
 
     async def _on_error(self, _conn, error=None, **_kwargs) -> None:
@@ -266,6 +276,7 @@ class DeepgramTTSStream:
         literally as "Star Telemannis... Star Star"."""
         text = strip_markdown_for_speech(text)
         if self._started and text.strip():
+            self._has_unflushed_text = True
             await self._conn.send_text(text)
 
     async def flush(self) -> None:
@@ -274,6 +285,10 @@ class DeepgramTTSStream:
         start synthesizing without this — confirmed empirically: no audio
         arrived after 2s with one queued sentence and no flush."""
         if self._started:
+            if not self._has_unflushed_text:
+                return  # nothing queued: no flush to wait for (and none would be confirmed)
+            self._has_unflushed_text = False
+            self._pending_flushes += 1
             self._flushed_event.clear()
             await self._conn.flush()
 
@@ -300,6 +315,8 @@ class DeepgramTTSStream:
         """Barge-in: stop whatever Deepgram is currently generating/queued."""
         if self._started:
             await self._conn.clear()
+        self._pending_flushes = 0
+        self._has_unflushed_text = False
         self._flushed_event.set()
         while not self._queue.empty():
             try:

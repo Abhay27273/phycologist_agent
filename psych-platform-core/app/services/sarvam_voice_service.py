@@ -7,7 +7,7 @@ VoiceSession can swap providers transparently based on session language.
 WHY Sarvam for Hindi/Hinglish sessions:
   - Saaras v3 mode=codemix handles natural Hinglish code-switching natively;
     global STT models show 30-50% relative WER increase on code-switched speech.
-  - Bulbul v1 renders Hinglish TTS in a single pass — no language-boundary
+  - Bulbul v3 renders Hinglish TTS in a single pass — no language-boundary
     routing that produces jarring output at every Hindi/English switch.
   - Data residency in India (DPDP advantage over US-based Deepgram).
 
@@ -28,6 +28,7 @@ Audio format: 16-bit PCM mono, 16000 Hz (matches AudioWorklet output).
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from typing import AsyncIterator, Tuple
@@ -59,16 +60,20 @@ def sarvam_enabled() -> bool:
 
 class SarvamSTTStream(STTStream):
     """
-    Sarvam Saaras v3 streaming STT via WebSocket.
+    Sarvam Saaras v3 streaming STT via WebSocket (wss://api.sarvam.ai/speech-to-text/ws).
 
-    Accepts 16-bit PCM mono @ 16kHz — identical to AudioWorklet output.
+    Accepts 16-bit PCM mono @ 16kHz - identical to AudioWorklet output.
     Uses mode=codemix for natural Hinglish transcription.
 
-    Implementation note: uses Sarvam's streaming WebSocket API directly since
-    the Python SDK does not yet expose an async streaming client.
+    Protocol (verified against the live API, 2026-11-26): audio goes up as JSON
+    {"audio": {"data": <base64 pcm>, "sample_rate": 16000, "encoding": "audio/wav"}};
+    server-side VAD sends {"type":"events","data":{"signal_type":"START_SPEECH"|"END_SPEECH"}}
+    and, once per finished utterance, {"type":"data","data":{"transcript": ...}}.
+    There are no interim transcripts, so each transcript is reported as a final,
+    speech_final segment and the voice loop's semantic/stall checks decide the turn.
     """
 
-    SARVAM_WS_URL = "wss://api.sarvam.ai/speech-to-text-translate/streaming"
+    SARVAM_WS_URL = "wss://api.sarvam.ai/speech-to-text/ws"
 
     def __init__(self, sample_rate: int = 16000, language_code: str = "hi-IN"):
         self._sample_rate = sample_rate
@@ -77,90 +82,113 @@ class SarvamSTTStream(STTStream):
         self._ws = None
         self._recv_task: asyncio.Task | None = None
         self._started = False
+        self._closing = False
+        self._reconnect_lock = asyncio.Lock()
 
-        # Rolling buffer for silence detection
-        self._last_speech_time: float = 0.0
-        self._pending_transcript = ""
-        self._has_speech = False
+    def _url(self) -> str:
+        from urllib.parse import urlencode
+        q = urlencode({
+            "model": settings.SARVAM_STT_MODEL,
+            "language-code": self._language_code,
+            "mode": "codemix",
+            "sample_rate": self._sample_rate,
+            "input_audio_codec": "pcm_s16le",
+            "vad_signals": "true",
+        })
+        return f"{self.SARVAM_WS_URL}?{q}"
+
+    async def _connect(self) -> bool:
+        import websockets
+        headers = {"Api-Subscription-Key": settings.SARVAM_API_KEY}
+        try:
+            self._ws = await websockets.connect(
+                self._url(), additional_headers=headers, ping_interval=20, open_timeout=10,
+            )
+        except TypeError:  # websockets < 14 spells it extra_headers
+            self._ws = await websockets.connect(
+                self._url(), extra_headers=headers, ping_interval=20, open_timeout=10,
+            )
+        self._recv_task = asyncio.create_task(self._receive_loop(self._ws))
+        return True
 
     async def start(self) -> bool:
         if not sarvam_enabled():
             logger.error("SarvamSTTStream: SARVAM_API_KEY not configured")
             return False
         try:
-            import websockets
-            self._ws = await websockets.connect(
-                self.SARVAM_WS_URL,
-                extra_headers={
-                    "Authorization": f"Bearer {settings.SARVAM_API_KEY}",
-                    "Content-Type": "application/octet-stream",
-                },
-                additional_headers={
-                    "X-Model": settings.SARVAM_STT_MODEL,
-                    "X-Language": self._language_code,
-                    "X-Mode": "codemix",
-                    "X-Sample-Rate": str(self._sample_rate),
-                    "X-Encoding": "pcm_s16le",
-                },
-                ping_interval=20,
-            )
+            await self._connect()
             self._started = True
-            self._recv_task = asyncio.create_task(self._receive_loop())
             logger.info("SarvamSTTStream started | model=%s lang=%s", settings.SARVAM_STT_MODEL, self._language_code)
             return True
         except Exception as e:
-            logger.error("SarvamSTTStream failed to start: %s", e)
+            logger.error("SarvamSTTStream failed to start: %s", type(e).__name__)
             return False
 
-    async def _receive_loop(self) -> None:
+    async def _receive_loop(self, ws) -> None:
         """Read JSON responses from Sarvam and translate to STT_* events."""
-        import asyncio
         try:
-            async for raw_msg in self._ws:
+            async for raw_msg in ws:
                 try:
-                    msg = json.loads(raw_msg) if isinstance(raw_msg, str) else {}
-                    msg_type = msg.get("type", "")
+                    msg = json.loads(raw_msg) if isinstance(raw_msg, (str, bytes)) else {}
+                except json.JSONDecodeError:
+                    continue
+                kind = msg.get("type", "")
+                data = msg.get("data") or {}
 
-                    if msg_type == "SpeechStarted":
-                        self._has_speech = True
+                if kind == "events":
+                    if data.get("signal_type") == "START_SPEECH":
                         await self._queue.put((STT_SPEECH_STARTED, None))
-
-                    elif msg_type in ("Transcript", "FinalTranscript"):
-                        transcript = msg.get("transcript", "").strip()
-                        is_final = msg_type == "FinalTranscript"
-                        speech_final = is_final
-                        if transcript:
-                            self._pending_transcript = transcript
-                            await self._queue.put((
-                                STT_TRANSCRIPT,
-                                TranscriptEvent(
-                                    transcript=transcript,
-                                    is_final=is_final,
-                                    speech_final=speech_final,
-                                ),
-                            ))
-
-                    elif msg_type == "UtteranceEnd":
-                        await self._queue.put((STT_UTTERANCE_END, None))
-
-                    elif msg_type == "Error":
-                        error_msg = msg.get("message", "Unknown Sarvam error")
-                        logger.error("Sarvam STT error: %s", error_msg)
-                        await self._queue.put((STT_ERROR, error_msg))
-
-                except (json.JSONDecodeError, KeyError):
-                    pass  # ignore malformed frames
+                elif kind == "data":
+                    transcript = (data.get("transcript") or "").strip()
+                    if transcript:
+                        await self._queue.put((
+                            STT_TRANSCRIPT,
+                            TranscriptEvent(transcript=transcript, is_final=True, speech_final=True),
+                        ))
+                elif kind == "error":
+                    detail = data.get("message") or data.get("error") or "Unknown Sarvam error"
+                    logger.error("Sarvam STT error: %s", str(detail)[:200])
+                    await self._queue.put((STT_ERROR, str(detail)))
         except Exception as e:
-            if self._started:
-                logger.error("SarvamSTTStream receive loop error: %s", e)
-                await self._queue.put((STT_ERROR, str(e)))
+            if self._started and not self._closing:
+                logger.warning("SarvamSTTStream receive loop ended: %s", type(e).__name__)
+                await self._queue.put((STT_ERROR, type(e).__name__))
+        finally:
+            # Mark the socket dead so the next audio packet reconnects.
+            if self._ws is ws:
+                self._ws = None
+
+    async def _ensure_connected(self) -> bool:
+        if self._ws is not None:
+            return True
+        async with self._reconnect_lock:
+            if self._ws is not None:
+                return True
+            try:
+                await self._connect()
+                logger.info("SarvamSTTStream reconnected")
+                return True
+            except Exception as e:
+                logger.warning("SarvamSTTStream reconnect failed: %s", type(e).__name__)
+                await asyncio.sleep(1.0)  # don't hammer on every 20 ms packet
+                return False
 
     async def send_audio(self, pcm_bytes: bytes) -> None:
-        if self._started and self._ws:
-            try:
-                await self._ws.send(pcm_bytes)
-            except Exception as e:
-                logger.error("SarvamSTTStream send_audio error: %s", e)
+        if not self._started or self._closing:
+            return
+        if not await self._ensure_connected():
+            return
+        try:
+            await self._ws.send(json.dumps({
+                "audio": {
+                    "data": base64.b64encode(pcm_bytes).decode("ascii"),
+                    "sample_rate": self._sample_rate,
+                    "encoding": "audio/wav",
+                }
+            }))
+        except Exception as e:
+            logger.warning("SarvamSTTStream send_audio error: %s", type(e).__name__)
+            self._ws = None
 
     def events(self) -> AsyncIterator[Tuple[str, object]]:
         return self._events_generator()
@@ -170,6 +198,7 @@ class SarvamSTTStream(STTStream):
             yield await self._queue.get()
 
     async def close(self) -> None:
+        self._closing = True
         self._started = False
         if self._recv_task and not self._recv_task.done():
             self._recv_task.cancel()
@@ -182,17 +211,18 @@ class SarvamSTTStream(STTStream):
                 await self._ws.close()
             except Exception:
                 pass
+            self._ws = None
 
 
 class SarvamTTSStream(TTSStream):
     """
-    Sarvam Bulbul v1 streaming TTS.
+    Sarvam Bulbul v3 streaming TTS.
 
     Handles Hinglish/Tanglish code-switching in a single pass — no language
     boundary detection or engine routing required.
 
     Implementation: uses Sarvam's REST TTS API with chunked streaming response.
-    Audio returned as 16-bit PCM mono @ 22050 Hz (resampled to 24kHz for playback).
+    Audio is requested as 16-bit PCM mono @ the playback rate (24 kHz) via speech_sample_rate.
     """
 
     SARVAM_TTS_URL = "https://api.sarvam.ai/text-to-speech"
@@ -203,7 +233,14 @@ class SarvamTTSStream(TTSStream):
         self._started = False
         self._flushed_event = asyncio.Event()
         self._text_buffer: list[str] = []
-        self._synthesis_task: asyncio.Task | None = None
+        # Synthesis jobs run strictly one at a time, in order. The voice loop
+        # flushes twice per reply (after the first sentence, then at the end);
+        # running those concurrently interleaved audio out of order and let the
+        # first job to finish release wait_until_flushed() while the second was
+        # still producing audio.
+        self._jobs: asyncio.Queue[str] = asyncio.Queue()
+        self._pending = 0
+        self._worker_task: asyncio.Task | None = None
 
     async def start(self) -> bool:
         if not sarvam_enabled():
@@ -221,14 +258,37 @@ class SarvamTTSStream(TTSStream):
         text = strip_markdown_for_speech(text)
         if self._started and text.strip():
             self._text_buffer.append(text.strip())
+            # Sarvam's REST TTS only returns audio once a whole request is
+            # synthesized, so waiting for flush() to batch the reply would delay
+            # everything after the first sentence until the LLM is done. Each
+            # send_text() is one sentence from the voice loop: queue it now and
+            # let the worker synthesize it (in order) while the previous
+            # sentence is still playing.
+            await self.flush()
 
     async def flush(self) -> None:
         if not self._started or not self._text_buffer:
             return
         text_to_speak = " ".join(self._text_buffer)
         self._text_buffer.clear()
+        self._pending += 1
         self._flushed_event.clear()
-        self._synthesis_task = asyncio.create_task(self._synthesize(text_to_speak))
+        self._jobs.put_nowait(text_to_speak)
+        if self._worker_task is None or self._worker_task.done():
+            self._worker_task = asyncio.create_task(self._worker())
+
+    async def _worker(self) -> None:
+        while True:
+            text = await self._jobs.get()
+            try:
+                await self._synthesize(text)
+            except asyncio.CancelledError:
+                raise
+            finally:
+                self._pending = max(0, self._pending - 1)
+                if self._pending == 0:
+                    self._flushed_event.set()
+                    await self._queue.put((TTS_FLUSHED, None))
 
     async def speak(self, text: str) -> None:
         await self.send_text(text)
@@ -239,21 +299,22 @@ class SarvamTTSStream(TTSStream):
         try:
             import httpx
             headers = {
-                "Authorization": f"Bearer {settings.SARVAM_API_KEY}",
+                "api-subscription-key": settings.SARVAM_API_KEY,
                 "Content-Type": "application/json",
             }
             payload = {
-                "inputs": [text],
+                "text": text,
                 "target_language_code": "hi-IN",
                 "speaker": settings.SARVAM_TTS_VOICE,
                 "model": settings.SARVAM_TTS_MODEL,
+                "speech_sample_rate": self._sample_rate,
                 "enable_preprocessing": True,
             }
             async with httpx.AsyncClient(timeout=30.0) as client:
                 async with client.stream("POST", self.SARVAM_TTS_URL, headers=headers, json=payload) as response:
                     if response.status_code != 200:
                         error_text = await response.aread()
-                        logger.error("Sarvam TTS error %d: %s", response.status_code, error_text[:200])
+                        logger.error("Sarvam TTS error %d: %s", response.status_code, error_text[:200].decode("utf-8", "replace"))
                         await self._queue.put((TTS_ERROR, f"HTTP {response.status_code}"))
                         return
 
@@ -278,23 +339,32 @@ class SarvamTTSStream(TTSStream):
         except Exception as e:
             logger.error("SarvamTTSStream synthesis error: %s", e)
             await self._queue.put((TTS_ERROR, str(e)))
-        finally:
-            self._flushed_event.set()
-            await self._queue.put((TTS_FLUSHED, None))
 
     async def wait_until_flushed(self, timeout: float = 10.0) -> None:
+        # Sentence-by-sentence synthesis is queued behind the LLM stream, so the
+        # tail of a long (guidance) reply legitimately takes longer than the
+        # 10 s Deepgram-era default.
+        timeout = max(timeout, 30.0)
         try:
             await asyncio.wait_for(self._flushed_event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("Timed out waiting for Sarvam TTS flush confirmation")
 
     async def cancel(self) -> None:
-        if self._synthesis_task and not self._synthesis_task.done():
-            self._synthesis_task.cancel()
+        if self._worker_task and not self._worker_task.done():
+            self._worker_task.cancel()
             try:
-                await self._synthesis_task
+                await self._worker_task
             except asyncio.CancelledError:
                 pass
+        self._worker_task = None
+        while not self._jobs.empty():
+            try:
+                self._jobs.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        self._pending = 0
+        self._text_buffer.clear()
         self._flushed_event.set()
         while not self._queue.empty():
             try:

@@ -97,6 +97,16 @@ class Settings(BaseSettings):
     QDRANT_PATH: str = "./qdrant_data"
     QDRANT_MODE: str = "local"   # "local" | "server"
     QDRANT_URL: str = "http://127.0.0.1:6333"  # used when QDRANT_MODE=server
+    # Only needed for Qdrant Cloud (or any secured Qdrant). Empty = unauthenticated.
+    QDRANT_API_KEY: str = Field(default="", description="Qdrant Cloud API key")
+
+    # Where query embeddings are computed.
+    #   "local"  — BAAI/bge-base-en-v1.5 in-process via PyTorch (default; needs ~1 GB RAM).
+    #   "hf_api" — the SAME model served by Hugging Face's hosted inference, so the
+    #              768-d vectors already in the index stay valid. No torch in the
+    #              process, which is what lets the app fit a 512 MB host (Render free).
+    EMBEDDING_BACKEND: Literal["local", "hf_api"] = "local"
+    HF_API_TOKEN: str = Field(default="", description="Hugging Face token; required when EMBEDDING_BACKEND=hf_api")
 
     # Pinecone — style exemplars in a separate index (namespaces are not enough
     # because the embedding model for style may differ from clinical content).
@@ -112,8 +122,8 @@ class Settings(BaseSettings):
     # Used when detected_language is "hi" or "hinglish"; Deepgram stays as English fallback.
     SARVAM_API_KEY: str = Field(default="", description="Sarvam AI key; falls back to Deepgram if unset")
     SARVAM_STT_MODEL: str = "saaras:v3"
-    SARVAM_TTS_MODEL: str = "bulbul:v1"
-    SARVAM_TTS_VOICE: str = "meera"
+    SARVAM_TTS_MODEL: str = "bulbul:v3"
+    SARVAM_TTS_VOICE: str = "priya"
 
     # --- VALIDATORS ---
 
@@ -132,6 +142,8 @@ class Settings(BaseSettings):
     def validate_backend_credentials(self) -> "Settings":
         if self.VECTOR_DB_BACKEND == "pinecone" and not self.PINECONE_API_KEY:
             raise ValueError("PINECONE_API_KEY is required when VECTOR_DB_BACKEND=pinecone")
+        if self.EMBEDDING_BACKEND == "hf_api" and not self.HF_API_TOKEN:
+            raise ValueError("HF_API_TOKEN is required when EMBEDDING_BACKEND=hf_api")
         return self
 
     @field_validator("DATABASE_URL", mode="before")

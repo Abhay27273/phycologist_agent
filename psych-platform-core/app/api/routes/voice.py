@@ -19,7 +19,13 @@ of them fail to fire.
 
 Client protocol:
   Binary frames  -> raw 16-bit PCM mono audio @ 16kHz (mic input)
-  Text frames    -> reserved for future control messages (unused in V1)
+  Text frames    -> JSON control messages:
+    {"type": "nonverbal_cues", "audio": {...}, "video": {...}}
+      VC feature, Phase 2 (video-call.js only — voice-call.js sends none of
+      this). audio/video shapes match _build_multimodal_hint in
+      sentiment.py: audio.tone/speech_rate/energy, video.dominant_emotion/
+      gaze_avoidance/action_units. Stored on the session and folded into
+      the next turn's sentiment analysis (see handle_client_text).
 
 Server protocol:
   Binary frames  -> raw 16-bit PCM mono audio @ 24kHz (TTS output)
@@ -38,6 +44,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 import time
 from typing import Optional
 
@@ -66,6 +73,7 @@ from app.services.sarvam_voice_service import (
     sarvam_enabled,
 )
 from app.services.voice_interface import STTStream, TTSStream
+from app.services.routed_tts import LanguageRoutedTTS, INDIC_LANGUAGES
 from app.services.turn_detector import smart_turn_detector
 from app.api.routes.chat import (
     _get_or_create_user_session,
@@ -154,27 +162,44 @@ _BACKCHANNELS_HI = [
 
 def _select_voice_provider(session_language: str) -> tuple[STTStream, TTSStream]:
     """
-    Route to Sarvam for Hindi/Hinglish sessions; fall back to Deepgram for English
-    or when Sarvam is not configured.
+    Pick speech providers for a call.
+
+    "auto" (the default) follows whichever language the person speaks, turn by
+    turn, like ChatGPT's and Claude's voice modes: one Sarvam stream with
+    language auto-detect hears English, Hindi and code-mixed speech, and each
+    reply is spoken by the engine for its language (see LanguageRoutedTTS).
+    Auto needs Sarvam; without it the call is English-only on Deepgram.
+
+    "hi" / "hinglish" / "en" pin the call to one language (a manual override
+    for when detection misfires).
+
     The cascaded safety architecture (text checkpoint) is provider-independent.
     """
-    if session_language in ("hi", "hinglish") and sarvam_enabled():
-        return SarvamSTTStream(sample_rate=16000), SarvamTTSStream(sample_rate=24000)
+    deepgram_tts = DeepgramTTSStream(sample_rate=24000)
+
+    if session_language == "auto" and sarvam_enabled():
+        return (
+            SarvamSTTStream(sample_rate=16000, language_code="unknown"),
+            LanguageRoutedTTS(english=deepgram_tts, indic=SarvamTTSStream(sample_rate=24000)),
+        )
+    if session_language in INDIC_LANGUAGES and sarvam_enabled():
+        return SarvamSTTStream(sample_rate=16000, language_code="hi-IN"), SarvamTTSStream(sample_rate=24000)
     # Deepgram defaults to English-only decoding with no language hint, which
     # garbles Hindi/Hinglish audio into nonsense English-phonetic text (e.g.
     # "mujhe lagta hai koi meri baat samajhta hi nahi" transcribed as
-    # "Mufalad de Haykoy Meribat Samashtra High" — confirmed live). Compared
+    # "Mufalad de Haykoy Meribat Samashtra High" - confirmed live). Compared
     # "en" (default), "multi" (nova-3 code-switching), and "hi" directly
     # against the same synthesized Hindi audio: "hi" was dramatically more
     # accurate ("mujhe meri baat samajh..." correctly in Devanagari) vs
     # "multi"'s still-garbled romanized guess and "en"'s complete gibberish.
-    # Only reached when Sarvam isn't configured — this is the
+    # Only reached when Sarvam isn't configured - this is the
     # degraded-but-still-functional fallback path, not the primary Hindi path.
-    stt_language = "hi" if session_language in ("hi", "hinglish") else "en"
-    return (
-        DeepgramSTTStream(sample_rate=16000, language=stt_language),
-        DeepgramTTSStream(sample_rate=24000),
-    )
+    stt_language = "hi" if session_language in INDIC_LANGUAGES else "en"
+    return DeepgramSTTStream(sample_rate=16000, language=stt_language), deepgram_tts
+
+
+def _is_indic(language: str) -> bool:
+    return language in INDIC_LANGUAGES
 
 
 class VoiceSession:
@@ -186,14 +211,18 @@ class VoiceSession:
         db: AsyncSession,
         user_id: str,
         session_id: str,
-        session_language: str = "en",
+        session_language: str = "auto",
     ):
         self.ws = websocket
         self.db = db
         self.user_id = user_id
         self.session_id = session_id
-        self.session_language = session_language
-        self.stt, self.tts = _select_voice_provider(session_language)
+        # What the caller asked for: "auto" (follow the speaker) or a pinned
+        # language. self.session_language is the language of the CURRENT
+        # conversation and moves with the speaker in auto mode.
+        self.language_mode = session_language if session_language in ("auto", "en", "hi", "hinglish") else "auto"
+        self.session_language = "en" if self.language_mode == "auto" else self.language_mode
+        self.stt, self.tts = _select_voice_provider(self.language_mode)
         self.is_ai_speaking = False
         self._turn_task: Optional[asyncio.Task] = None
         self._ducked = False
@@ -206,6 +235,57 @@ class VoiceSession:
         self._last_three_moves: list[str] = []
         self._relevant_context: str = ""
         self._last_mood: str = "neutral"
+        # VC feature, Phase 2: nonverbal cues from the client (voice-tone
+        # heuristics from video-call.js's audio analysis, facial blendshape
+        # summary from face-tracking.js). Whatever arrived most recently
+        # over a WS text frame — see the "nonverbal_cues" branch in
+        # websocket_voice below. None until the client sends anything,
+        # which _build_multimodal_hint already handles (see sentiment.py —
+        # this dict shape was designed for exactly this, just never fed
+        # real values before now).
+        self._latest_audio_features: dict | None = None
+        self._latest_video_features: dict | None = None
+
+    def _resolve_turn_language(self, message: str, detected: str) -> str:
+        """Language for this turn's reply. Normally what the person just said.
+        A very short, language-neutral utterance ("ok", "yes", "hmm") reads as
+        English even mid-Hindi; keep the conversation's language for those
+        rather than flipping voices on a filler word."""
+        if (
+            self.language_mode == "auto"
+            and detected == "en"
+            and _is_indic(self.session_language)
+            and len(re.findall(r"\w+", message)) <= 3
+        ):
+            return self.session_language
+        return detected
+
+    def _use_language(self, language: str) -> None:
+        """Record the conversation's language and point the TTS at it."""
+        if language != self.session_language:
+            logger.info(
+                "Voice language switch | session=%s | %s -> %s",
+                self.session_id, self.session_language, language,
+            )
+        self.session_language = language
+        if isinstance(self.tts, LanguageRoutedTTS):
+            self.tts.set_language(language)
+
+    def _align_voice_to_reply(self, first_sentence: str, language: str) -> None:
+        """Safety net: speak in the language the reply is actually written in.
+        The model usually answers in the user's language, but can slip (e.g. a
+        Hindi reply to an English message after a Hindi conversation), and an
+        English voice reading Hindi text is unintelligible. Decided once, from
+        the first sentence, so a reply is never split across two voices."""
+        if self.language_mode != "auto":
+            return
+        reply_language = _detect_language(first_sentence)
+        if reply_language != language:
+            logger.info(
+                "Voice reply language differs from input | session=%s | input=%s reply=%s",
+                self.session_id, language, reply_language,
+            )
+            self._use_language(reply_language)
 
     async def start(self) -> bool:
         stt_ok = await self.stt.start()
@@ -216,6 +296,36 @@ class VoiceSession:
         self._audio_buffer.extend(pcm16_bytes)
         if len(self._audio_buffer) > _AUDIO_BUFFER_MAX_BYTES:
             del self._audio_buffer[: len(self._audio_buffer) - _AUDIO_BUFFER_MAX_BYTES]
+
+    def handle_client_text(self, raw: str) -> None:
+        """VC feature, Phase 2: the client (video-call.js) periodically sends
+        a "nonverbal_cues" text frame — voice-tone heuristics from its own
+        audio analysis, plus a facial-blendshape summary from
+        face-tracking.js. Stored here and read the next time _run_turn
+        builds sentiment_state (see _build_multimodal_hint in sentiment.py,
+        which already expected exactly this shape but was never fed real
+        values before now).
+
+        Deliberately best-effort: malformed or unrecognised messages are
+        logged and dropped, never raised — a parsing hiccup on an optional
+        enhancement channel must not take down the whole voice turn loop
+        the way an unhandled exception here would.
+        """
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.debug("Voice WS text frame not JSON, ignoring | session=%s", self.session_id)
+            return
+
+        if data.get("type") != "nonverbal_cues":
+            return  # only known control-message type today; others reserved
+
+        audio = data.get("audio")
+        if isinstance(audio, dict):
+            self._latest_audio_features = audio
+        video = data.get("video")
+        if isinstance(video, dict):
+            self._latest_video_features = video
 
     async def send_json(self, payload: dict) -> None:
         await self.ws.send_text(json.dumps(payload))
@@ -519,6 +629,14 @@ class VoiceSession:
             sentiment_state = {
                 "messages": [{"role": "user", "content": message}],
                 "user_id": self.user_id,
+                # VC feature, Phase 2: whatever nonverbal cues arrived most
+                # recently (see handle_client_text). None on a plain voice
+                # call (voice-call.js never sends this) or before the first
+                # "nonverbal_cues" frame arrives — _build_multimodal_hint
+                # already handles None/missing gracefully (produces no hint
+                # text at all), so this is safe on every call path.
+                "audio_features": self._latest_audio_features,
+                "video_features": self._latest_video_features,
             }
             # Patient-memory recall runs INSIDE this gather, not after it, so
             # it costs no extra wall-clock — it overlaps the sentiment LLM
@@ -543,7 +661,8 @@ class VoiceSession:
             mood = sentiment_result["current_mood"]
             self._last_mood = mood
             risk_score = sentiment_result["risk_score"]
-            language = sentiment_result["detected_language"]
+            language = self._resolve_turn_language(message, sentiment_result["detected_language"])
+            self._use_language(language)
             cognitive_distortion = sentiment_result["cognitive_distortion_detected"]
             is_crisis = sentiment_result["is_crisis"]
             level = _risk_level(risk_score)
@@ -607,7 +726,7 @@ class VoiceSession:
                 needs_rag = _needs_rag(message, mood, move)
                 if needs_rag:
                     # Language-aware backchannel ack
-                    acks = _BACKCHANNELS_HI if self.session_language in ("hi", "hinglish") else _BACKCHANNELS
+                    acks = _BACKCHANNELS_HI if _is_indic(language) else _BACKCHANNELS
                     await self.tts.speak(random.choice(acks))
                     context = await rag_service.retrieve_clinical_context(message, mood)
                 else:
@@ -683,6 +802,8 @@ class VoiceSession:
                     buf += token
                     sentences, buf = _flush_sentences(buf)
                     for sentence in sentences:
+                        if not flushed_first_sentence:
+                            self._align_voice_to_reply(sentence, language)
                         await self.tts.send_text(sentence)
                         if not flushed_first_sentence:
                             # Flush once, early, so audio starts promptly —
@@ -694,6 +815,8 @@ class VoiceSession:
                             await self.tts.flush()
                             flushed_first_sentence = True
                 if buf.strip():
+                    if not flushed_first_sentence:
+                        self._align_voice_to_reply(buf.strip(), language)
                     await self.tts.send_text(buf.strip())
                 await self.tts.flush()
 
@@ -744,7 +867,8 @@ class VoiceSession:
             # all, indistinguishable from the call just going dead to anyone
             # not inspecting WS control frames. On a voice call the failure
             # itself needs to be spoken, not just logged.
-            language = _detect_language(message)
+            language = self._resolve_turn_language(message, _detect_language(message))
+            self._use_language(language)
             fallback = (
                 "Maaf karna, mujhe thoda sa dikkat aa rahi hai abhi. Thoda ruk kar phir se try karo."
                 if language in ("hi", "hinglish")
@@ -804,7 +928,7 @@ async def websocket_voice(
     websocket: WebSocket,
     session_id: str,
     token: str = "",
-    lang: str = "en",   # client hints detected language: en | hi | hinglish
+    lang: str = "auto",   # auto (follow the speaker, default) | en | hi | hinglish (pin the call)
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -847,7 +971,8 @@ async def websocket_voice(
             if message.get("bytes") is not None:
                 await voice_session.stt.send_audio(message["bytes"])
                 voice_session.append_audio(message["bytes"])
-            # Text frames reserved for future control messages (e.g. mute) — ignored in V1.
+            elif message.get("text") is not None:
+                voice_session.handle_client_text(message["text"])
     except WebSocketDisconnect:
         logger.info("Voice WebSocket disconnected | session=%s", session_id)
     finally:

@@ -260,6 +260,17 @@ body { overflow: hidden; }
   transition: background 0.15s ease;
 }
 .icon-btn:hover { background: var(--border); }
+.voice-lang {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
 .icon-btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-contrast); }
 
 .connection-banner {
@@ -458,7 +469,38 @@ body { overflow: hidden; }
   --voice-level: 0;
   background: var(--bg);
   align-items: stretch;
+  position: relative; /* anchors the face-tracking self-view/debug overlay */
 }
+
+/* ---------- VC feature, Phase 1: facial capture self-view + debug ---------- */
+.face-track-video {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  width: 120px;
+  height: 90px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  transform: scaleX(-1); /* mirror, so it behaves like a normal camera self-view */
+  z-index: 2;
+}
+
+.face-track-debug {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  max-width: 220px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+  z-index: 2;
+}
+.face-track-debug strong { color: var(--text); font-weight: 600; }
 
 .voice-header {
   display: flex;
@@ -534,6 +576,18 @@ body { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .voice-orb { animation: none !important; transform: none !important; }
 }
+
+/* ---------- VC feature, Phase 3: static avatar render (Three.js) ---------- */
+.avatar-canvas {
+  width: 240px;
+  height: 300px;
+  border-radius: var(--radius-sm);
+}
+
+/* The orb was the primary visual before the avatar canvas existed; now it's
+   superseded but left wired up (video-call.js still sets its data-state)
+   for Phase 5 to repurpose rather than re-plumb from scratch. */
+#video-call-orb { display: none; }
 
 .voice-state-label {
   font-size: 0.95rem;

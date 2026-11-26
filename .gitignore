@@ -62,3 +62,14 @@ azurecli_install.log
 # irreversible (forks, caches, scrapers), so the corpus is transferred to
 # deployment targets out-of-band instead. ~92MB.
 psych-platform-core/data/
+
+# Avatar capture data (HUMAN_AVATAR_TRAINING_PLAN.md / AVATAR_CAPTURE_PIPELINE.md) —
+# real actors' recorded face + voice performance data (biometric data of real
+# people). Same reasoning as the clinical corpora above, same public-repo
+# constraint: gitignored from the start, never committed even once. The
+# session_manifest.schema.json definition is the only tracked file under
+# avatar_capture/ — actual raw/processed captures never are.
+avatar_capture/raw/*
+avatar_capture/processed/*
+!avatar_capture/raw/.gitkeep
+!avatar_capture/processed/.gitkeep

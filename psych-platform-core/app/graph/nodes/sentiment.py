@@ -2,6 +2,7 @@ import re
 import logging
 from app.domain.state import PsychologicalState
 from app.services.llm_interface import LLMService
+from app.services.crisis_rules import detect_crisis_cues
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,27 @@ class SentimentNode:
 
         # Fast heuristic distortion pre-check
         heuristic_distortion = _has_distortion_signal(last_message)
+
+        # Deterministic crisis net — runs BEFORE any model. An LLM scorer can
+        # miss indirect cues (it scored the "standing on the edge" and
+        # "too many sleeping pills" probes 0), can be rate-limited, or can be
+        # down entirely; none of that may stand between a user and the crisis
+        # response. On a hit we skip the model altogether: the crisis path
+        # ignores mood, so there is nothing worth waiting on a provider for.
+        # Checked on the user's own words only, not the multimodal hint.
+        cues = detect_crisis_cues(last_message)
+        if cues:
+            logger.warning(
+                "Crisis rules fired (model skipped) | rules=%s | user=%s",
+                ",".join(c.rule for c in cues), state.get("user_id"),
+            )
+            return {
+                "current_mood": "hopeless",
+                "risk_score": cues[0].floor,
+                "is_crisis": True,
+                "detected_language": detected_language,
+                "cognitive_distortion_detected": heuristic_distortion,
+            }
 
         mood_list = ", ".join(sorted(_VALID_MOODS))
         prompt = _SENTIMENT_PROMPT_TEMPLATE.format(

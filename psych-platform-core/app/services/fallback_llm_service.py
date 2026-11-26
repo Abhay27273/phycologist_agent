@@ -9,6 +9,18 @@ from app.services.llm_interface import LLMService
 logger = logging.getLogger(__name__)
 
 _RATE_LIMIT_BACKOFF = 65  # fallback when the provider gives no retry hint at all
+# A TIMEOUT is not a rate limit: it means one slow answer, not an exhausted
+# quota. Benching a provider for the full 65s over one slow first token let
+# three providers time out within ~12s of each other (6s step budget each) and
+# left every reply canned for a minute (measured 2026-11-25: 5 consecutive
+# "I'm here with you." replies). A short bench still avoids hammering a hung
+# provider without taking it out of rotation for a whole minute.
+_TIMEOUT_BACKOFF = 10
+# When EVERY provider is cooling down, wait for the soonest one rather than
+# answering with the canned line — but only for a short cooldown. Long ones
+# (provider-specified retry-after, daily quotas) are respected as-is: retrying
+# into an over-budget provider was observed to lengthen its outage.
+_MAX_ALL_BENCHED_WAIT_S = 12.0
 # Ceiling on a provider-specified retry-after — a single spike shouldn't be
 # able to bench a provider for an unreasonable stretch even if it asks to.
 _MAX_RATE_LIMIT_BACKOFF = 300  # 5 minutes
@@ -102,11 +114,33 @@ class FallbackLLMService(LLMService):
     def _available(self, svc: LLMService) -> bool:
         return time.monotonic() >= self._backoff_until.get(id(svc), 0)
 
+    async def _candidates(self) -> list:
+        """Providers to try, in order. Normally the ones not cooling down. If
+        ALL are cooling down and the soonest comes back within
+        _MAX_ALL_BENCHED_WAIT_S, wait for it and use it; otherwise return []
+        (callers then fail/fall back exactly as before)."""
+        available = [s for s in self._services if self._available(s)]
+        if available or not self._services:
+            return available
+        soonest = min(self._services, key=lambda s: self._backoff_until.get(id(s), 0.0))
+        wait = self._backoff_until.get(id(soonest), 0.0) - time.monotonic()
+        if 0 < wait <= _MAX_ALL_BENCHED_WAIT_S:
+            logger.warning(
+                "FallbackLLM: every provider is cooling down — waiting %.1fs for %s",
+                wait, type(soonest).__name__,
+            )
+            await asyncio.sleep(wait)
+            return [soonest]
+        return []
+
     def _trip(self, svc: LLMService, exc: Exception | None = None) -> None:
         retry_after = _extract_retry_after(exc) if exc is not None else None
         if retry_after is not None:
             backoff = min(retry_after, _MAX_RATE_LIMIT_BACKOFF)
             source = "provider-specified"
+        elif isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+            backoff = _TIMEOUT_BACKOFF
+            source = "timeout"
         else:
             backoff = _RATE_LIMIT_BACKOFF
             source = "default"
@@ -123,10 +157,7 @@ class FallbackLLMService(LLMService):
 
     async def _try_all(self, method_name: str, *args, **kwargs):
         last_exc: Exception | None = None
-        for svc in self._services:
-            if not self._available(svc):
-                logger.debug("FallbackLLM: %s skipped (backoff active)", type(svc).__name__)
-                continue
+        for svc in await self._candidates():
             method = getattr(svc, method_name, None)
             if method is None:
                 continue
@@ -180,9 +211,7 @@ class FallbackLLMService(LLMService):
         TTS), starting a second provider from scratch mid-stream would
         produce garbled, duplicated output, which is worse than just ending
         the turn where it is."""
-        for svc in self._services:
-            if not self._available(svc):
-                continue
+        for svc in await self._candidates():
             method = getattr(svc, "stream_response_for_move", None)
             if method is None:
                 continue
@@ -229,9 +258,7 @@ class FallbackLLMService(LLMService):
         stop (rather than retry a second provider) once any output has
         already been yielded, since restarting mid-stream on a new provider
         would produce garbled/duplicated text."""
-        for svc in self._services:
-            if not self._available(svc):
-                continue
+        for svc in await self._candidates():
             method = getattr(svc, "stream_therapeutic_response", None)
             if method is None:
                 continue

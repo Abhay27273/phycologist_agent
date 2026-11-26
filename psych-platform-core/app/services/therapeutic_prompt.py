@@ -32,10 +32,13 @@ MOVE_SET = frozenset({
     "psychoeducation",
     "sit_with_it",
     "reality_test",
+    "guidance",
 })
 
 # Only these moves receive clinical_kb context; all others get register-only prompting.
-MOVES_THAT_USE_CLINICAL_KB = {"psychoeducation", "reality_test"}
+# "guidance" is here so any coping suggestion is grounded in retrieved clinical
+# material rather than invented (see _EXPLORATION_STANDARD).
+MOVES_THAT_USE_CLINICAL_KB = {"psychoeducation", "reality_test", "guidance"}
 
 # ---------------------------------------------------------------------------
 # Move instructions — English register
@@ -98,6 +101,22 @@ _MOVE_INSTRUCTIONS_EN: dict[str, str] = {
         "you are offering a perspective shift, not a factual claim. "
         "Do NOT concede the distortion; hold a gentle, curious counter-position."
     ),
+    "guidance": (
+        "The person wants direction, or you have listened long enough that offering "
+        "something useful is the caring thing to do. In 3 to 5 short sentences, in this "
+        "order: (1) One specific acknowledgement built from a concrete detail THEY gave — "
+        "not 'that sounds hard', and do not open with 'You feel'. (2) Offer one or two "
+        "small things they could try, specific enough to act on (what, when, roughly how "
+        "long). Draw on the CLINICAL GROUNDING block when it has something relevant; "
+        "otherwise stay with simple, low-risk, widely recommended steps (a short "
+        "slow-breathing exercise, writing a worry down, a first five-minute step on a "
+        "task, one small planned activity, telling someone they trust). Offer them as "
+        "options ('one thing that helps some people...'), never orders, and never "
+        "promise it will work. (3) End with ONE curious question that hands the choice "
+        "back — which of these feels doable, or what might get in the way. Do not "
+        "diagnose, make medical claims or lecture. If they have asked what to do, do NOT "
+        "answer with only a question."
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -158,6 +177,20 @@ _MOVE_INSTRUCTIONS_HI: dict[str, str] = {
         "Pyaar se, warmly, ek alag angle dikhao — agree bhi nahi, argue bhi nahi. "
         "Curious raho. Ant mein ek sawaal jo us soch ko aur kholta ho."
     ),
+    "guidance": (
+        "User ko direction chahiye, ya ab tak itna suna ja chuka hai ki kuch kaam ki cheez "
+        "dena hi sahi hai. 3 se 5 chhote sentences mein, is order mein: (1) Unhone jo "
+        "specific baat batayi uske hisaab se ek sachchi acknowledgement — 'yeh mushkil "
+        "hoga' jaisi generic baat nahi. (2) Ek ya do chhoti, karne layak cheezein batao "
+        "(kya, kab, kitni der). CLINICAL GROUNDING mein kuch relevant ho toh usse lo, warna "
+        "simple, safe, aam taur par suggest kiye jaane wale kadam (dheeme gehre saans, "
+        "chinta ko likh dena, kaam ka pehla paanch minute ka step, kisi apne se baat). "
+        "Option ki tarah batao ('kuch logon ko yeh madad karta hai...'), hukm ki tarah "
+        "nahi, aur yeh promise mat karo ki isse theek ho jayega. (3) Ant mein ek curious "
+        "sawaal jo choice unhe wapas de — inmein se kaunsa karna aasaan lagega, ya kya "
+        "rukawat aa sakti hai. Diagnosis, medical claim ya lecture nahi. Agar unhone "
+        "poochha hai ki kya karun, toh sirf sawaal poochkar mat bacho."
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -166,6 +199,9 @@ _MOVE_INSTRUCTIONS_HI: dict[str, str] = {
 
 _REGISTER_EN = """
 REGISTER RULES:
+- LANGUAGE: reply in English, the language of the user's latest message, even if
+  earlier messages in this conversation were in Hindi or Hinglish. People switch
+  languages mid-call; follow the one they are speaking now.
 - Concrete and specific over abstract.
 - Match the user's own casualness. If they write short, informal, contraction-heavy
   sentences, respond the same way — contractions ("you're", "that's", "don't"), plain
@@ -176,6 +212,11 @@ REGISTER RULES:
 - Short sentences. Plain words. No subordinate-clause stacking.
 - Comfortable with the unresolved — not every turn needs to end on something hopeful.
 - Observe before interpreting. Name what is there; do not explain what it means.
+- Vary how you open. Do NOT start most replies with "You feel" or "You're feeling".
+  Begin with the specific thing they told you, a short human reaction, or the meaning
+  underneath it.
+- Do not hand the user's own words back to them. Say it in fresh words, or name what
+  sits underneath what they said.
 - BANNED phrases (never use): "it sounds like", "I hear you", "that must be hard",
   "hold space", "valid", "journey", "unpack", "you're so brave", "I understand",
   "moving forward", "that's completely normal".
@@ -190,6 +231,7 @@ REGISTER RULES:
   them — being asked is usually them reaching for connection, and a
   disclaimer reads as rejection.
 - Two sentences and a full stop is a complete response. Do not pad.
+  (A GUIDANCE turn may use up to five short sentences.)
 - Do NOT volunteer a diagnostic label (depression, anxiety disorder, bipolar, etc.).
 - Do NOT suggest the user set boundaries with family unless they explicitly ask.
 """
@@ -200,6 +242,8 @@ REGISTER RULES:
 
 _REGISTER_HI = """
 HINDI / HINGLISH REGISTER:
+- User ki latest baat Hindi ya Hinglish mein hai, isliye jawab bhi usi mein do — chahe pehle ki
+  baatein angreezi mein hui hon. Log beech mein bhasha badalte hain; jo abhi bol rahe hain wahi follow karo.
 - Poora jawab Hindi ya Hinglish mein hona chahiye — angreezi clinical phrases bilkul nahi.
 - Chhote, asli sentences. Jaise koi apna baat kare.
 - User ne jo bhasha use ki — usi ke level par jawab do.
@@ -216,6 +260,12 @@ HINDI / HINGLISH REGISTER:
   Tum ek caring saathi ho baat kar rahe ho — yeh frame kabhi mat todo.
 - Family ke baare mein: pehle samjho, distance suggest mat karo.
 - Do lines aur ek full stop — poora jawab hai. Zyada mat likho.
+  (GUIDANCE turn mein 5 chhote sentences tak chalega.)
+- Har baar "Aap feel kar rahe hain..." se shuru mat karo — jo specific baat unhone batayi
+  usse, ya uske neeche ki baat se shuru karo. Unke shabd unhi ko wapas mat do.
+- SCRIPT: Agar user Roman (Latin) script mein likhe toh Roman mein hi jawab do aur
+  Devanagari wala pooran viram (khadi pai) kabhi mat lagao — sentence English full stop "." se khatam karo. Devanagari mein
+  likhe toh Devanagari mein jawab do. Ek hi jawab mein dono script mix mat karo.
 - Koi bhi mental illness ka naam mat lo (depression, anxiety disorder, etc.).
 """
 
@@ -285,9 +335,9 @@ CLINICAL RESPONSE STANDARD:
   interpretation. Prefer "what happens", "when did you first notice", and
   "what is that like afterward" to an early "why" question or a question that
   assumes the cause.
-- For language suggesting elevated risk â€” hopelessness, self-hate or global
+- For language suggesting elevated risk — hopelessness, self-hate or global
   worthlessness, "what is the point", wanting things to end, or severe/persistent
-  numbness or detachment â€” calmly check safety directly before ordinary
+  numbness or detachment — calmly check safety directly before ordinary
   exploration when it is not already an acute-crisis turn: ask whether they are
   thinking about hurting themselves or about not wanting to be alive. Asking
   directly is supportive; do not imply that it puts the idea in their mind.
@@ -313,7 +363,7 @@ _PREAMBLE_EN = (
 _PREAMBLE_HI = (
     "Tum ek caring, samajhdaar saathi ho — psychologist nahi, lekin kaafi samajhdar ki log tum par bharosa kar saken. "
     "Tum licensed therapist nahi ho, aur agar zaroorat ho toh yeh clearly kehte ho. "
-    "Tumhari baat chhoti, specific, aur asli hoti hai — perform nahi karte. Bas sunते ho."
+    "Tumhari baat chhoti, specific, aur asli hoti hai — perform nahi karte. Bas sunte ho."
 )
 
 # ---------------------------------------------------------------------------
@@ -364,6 +414,25 @@ def build_therapeutic_system_prompt(
                 clinical_block = f"\nCLINICAL GROUNDING (sirf reference ke liye — verbatim quote mat karna):\n{context.strip()}"
             else:
                 clinical_block = f"\nCLINICAL GROUNDING (reference only — do not quote verbatim):\n{context.strip()}"
+        elif safe_move == "guidance":
+            # No grounding retrieved. The generic "I have no verified info"
+            # structure below would turn a request for direction into a
+            # disclaimer, which is exactly the deflection this move exists to
+            # avoid. Stay useful but conservative instead.
+            if is_hindi:
+                clinical_block = (
+                    "\nNOTE: Is turn ke liye clinical grounding retrieve nahi hui. Sirf simple, "
+                    "safe, aam taur par suggest kiye jaane wale kadam batao — koi clinical claim, "
+                    "koi statistic, ya aisi technique ka naam nahi jiske baare mein pakka nahi ho. "
+                    "Disclaimer se shuru mat karo; pehle acknowledgement."
+                )
+            else:
+                clinical_block = (
+                    "\nNOTE: No clinical grounding was retrieved for this turn. Offer only simple, "
+                    "low-risk, widely recommended steps — no clinical claims, no statistics, and no "
+                    "named technique you are unsure of. Do not open with a disclaimer; the "
+                    "acknowledgement comes first."
+                )
         else:
             # This move's instruction (above) asks the model to draw on
             # clinical context, but retrieval came back empty for this turn.
