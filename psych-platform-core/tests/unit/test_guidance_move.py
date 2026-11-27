@@ -222,3 +222,15 @@ def test_prompts_follow_the_language_the_user_is_speaking_now():
     assert "even if" in en and "Hindi or Hinglish" in en
     hi = build_therapeutic_system_prompt(context="", mood="anxious", move="open_question", language="hi")
     assert "chahe pehle ki" in hi
+
+
+def test_script_rule_is_the_last_thing_and_matches_the_users_script():
+    import re
+    roman = build_therapeutic_system_prompt(context="", mood="tired", move="open_question", language="hinglish")
+    assert roman.rstrip().endswith("End sentences with a full stop (.).")
+    assert "Do not write a single Devanagari character" in roman
+    assert not re.search(r"[ऀ-ॿ]", roman), "the prompt must not contain Devanagari itself"
+    deva = build_therapeutic_system_prompt(context="", mood="tired", move="open_question", language="hi")
+    assert deva.rstrip().endswith("Do not write Hindi words in Roman letters.")
+    en = build_therapeutic_system_prompt(context="", mood="tired", move="open_question", language="en")
+    assert "SCRIPT (strict)" not in en

@@ -370,6 +370,25 @@ _PREAMBLE_HI = (
 # Public builder
 # ---------------------------------------------------------------------------
 
+# Last thing in the prompt (recency matters): the model sometimes answers a
+# Roman-script Hinglish message in Devanagari, or mixes scripts inside one
+# sentence, which reads badly in chat and is spoken wrongly by the TTS. Chosen by
+# the language of the user's latest message: "hinglish" means Latin letters
+# (Roman script), "hi" means Devanagari. Kept free of Devanagari characters so
+# the prompt itself cannot prime the wrong script.
+_SCRIPT_RULES = {
+    "hinglish": (
+        "\nSCRIPT (strict): the user writes Hindi in Roman letters (a-z). Write your ENTIRE "
+        "reply in Roman letters the same way, including every Hindi word. Do not write a "
+        "single Devanagari character, not even one word. End sentences with a full stop (.)."
+    ),
+    "hi": (
+        "\nSCRIPT (strict): the user writes in Devanagari. Write your reply in Devanagari too; "
+        "English words may stay in Latin letters. Do not write Hindi words in Roman letters."
+    ),
+}
+
+
 def build_therapeutic_system_prompt(
     context: str,
     mood: str,
@@ -513,6 +532,7 @@ def build_therapeutic_system_prompt(
         clinical_block,
         register,
         exemplar_block,
+        _SCRIPT_RULES.get(language, ""),
     ]
 
     return "\n".join(p for p in parts if p)
